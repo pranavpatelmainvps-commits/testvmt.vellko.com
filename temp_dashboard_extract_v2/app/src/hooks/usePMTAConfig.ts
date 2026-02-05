@@ -10,23 +10,13 @@ import type {
   ConfigExport
 } from '@/types';
 
-const API_BASE = '/api/pmta';
+import { fetchApi as globalFetchApi } from '@/lib/api';
 
-// Generic fetch wrapper
+const BASE_PATH = '/api/pmta';
+
+// Wrapper to prepend base path
 async function fetchApi<T>(endpoint: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE}${endpoint}`, {
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    ...options,
-  });
-
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({ error: 'Unknown error' }));
-    throw new Error(error.error || `HTTP ${response.status}`);
-  }
-
-  return response.json();
+  return globalFetchApi<T>(`${BASE_PATH}${endpoint}`, options);
 }
 
 // Hook for managing complete PMTA configuration

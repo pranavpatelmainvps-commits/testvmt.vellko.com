@@ -6,3 +6,8 @@ deployment_v2/
 temp_dashboard_extract/
 __pycache__/
 *.log
+
+# State files (Do not push these!)
+install_status.json
+install_progress.log
+debug_logs.txt

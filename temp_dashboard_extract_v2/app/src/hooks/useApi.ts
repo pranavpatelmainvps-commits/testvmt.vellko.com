@@ -8,24 +8,7 @@ import type {
   InboundEmail
 } from '@/types';
 
-const API_BASE = ''; // Empty for same-origin requests
-
-// Generic fetch wrapper
-async function fetchApi<T>(endpoint: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE}${endpoint}`, {
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    ...options,
-  });
-
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({ error: 'Unknown error' }));
-    throw new Error(error.error || `HTTP ${response.status}`);
-  }
-
-  return response.json();
-}
+import { fetchApi } from '@/lib/api';
 
 // Hook for installation
 export function useInstall() {

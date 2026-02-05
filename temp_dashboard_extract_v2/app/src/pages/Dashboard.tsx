@@ -1,11 +1,7 @@
 import {
   Mail,
-  CheckCircle2,
   AlertCircle,
-  Wrench,
   ExternalLink,
-  FileText,
-  Globe,
   Rocket,
   Terminal,
   ChevronDown,
@@ -16,18 +12,11 @@ import { useLogStream } from '@/hooks/useApi';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
+
 
 // import { useMockDomainMappings, useMockInboundEmails } from '@/hooks/useApi'; // Removed
 
 import { useEffect, useState } from 'react';
-import { Key } from 'lucide-react';
 
 interface SystemStatus {
   status: string;
@@ -136,41 +125,7 @@ function InstallationStatusCard({ status, message }: { status: string, message?:
 // Helper needed for scroll ref
 import { useRef } from 'react';
 
-// Domain PTR Row Component
-function DomainPTRRow({
-  ip,
-  domain,
-  ptrStatus
-}: {
-  ip: string;
-  domain: string;
-  ptrStatus: 'verified' | 'fix' | 'pending';
-}) {
-  return (
-    <tr className="border-b border-border/50 hover:bg-white/5 transition-colors">
-      <td className="py-3 px-4 font-mono text-sm text-slate-300">{ip}</td>
-      <td className="py-3 px-4 text-sm text-slate-300">{domain}</td>
-      <td className="py-3 px-4">
-        {ptrStatus === 'verified' ? (
-          <div className="flex items-center gap-2 text-green-500">
-            <CheckCircle2 className="w-4 h-4" />
-            <span className="text-sm font-medium">Verified</span>
-          </div>
-        ) : ptrStatus === 'fix' ? (
-          <Button variant="destructive" size="sm" className="h-7 px-3 text-xs">
-            <Wrench className="w-3 h-3 mr-1" />
-            Fix
-          </Button>
-        ) : (
-          <div className="flex items-center gap-2 text-yellow-500">
-            <AlertCircle className="w-4 h-4" />
-            <span className="text-sm font-medium">Pending</span>
-          </div>
-        )}
-      </td>
-    </tr>
-  );
-}
+
 
 // Inbound Email Item Component
 function InboundEmailItem({
@@ -237,16 +192,7 @@ export function Dashboard() {
   const [systemStatus, setSystemStatus] = useState<SystemStatus>({ status: 'loading' });
   const [inboundEmails, setInboundEmails] = useState<InboundEmail[]>([]);
 
-  // Derived state for mappings to match UI format
-  const domainMappings = (systemStatus.mappings || []).map(m => {
-    // Check if there is a failure for this IP
-    const failure = (systemStatus.ptr_results || []).find(f => f.ip === m.ip);
-    return {
-      ip: m.ip,
-      domain: m.domain,
-      ptrStatus: failure ? 'fix' : 'verified'
-    };
-  });
+
 
   useEffect(() => {
     // Poll for status
@@ -314,169 +260,38 @@ export function Dashboard() {
         />
       )}
 
-      {/* Domain & PTR Identity Check */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <Card className="glass-card dashboard-card">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-white">
-              <Globe className="w-5 h-5 text-blue-500" />
-              Domain & PTR Identity Check
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="overflow-x-auto">
-              <table className="w-full text-left">
-                <thead>
-                  <tr className="border-b border-border/50 text-xs uppercase text-slate-500">
-                    <th className="py-2 px-4 font-medium">IP Address</th>
-                    <th className="py-2 px-4 font-medium">Assigned Domain</th>
-                    <th className="py-2 px-4 font-medium">PTR Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {domainMappings.length > 0 ? (
-                    domainMappings.map((mapping, i) => (
-                      <DomainPTRRow
-                        key={i}
-                        ip={mapping.ip}
-                        domain={mapping.domain}
-                        ptrStatus={mapping.ptrStatus as any}
-                      />
-                    ))
-                  ) : (
-                    <tr><td colSpan={3} className="text-center py-4 text-slate-500">No domains configured</td></tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Live Inbound Feed */}
-        <Card className="glass-card dashboard-card">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-white">
-              <Mail className="w-5 h-5 text-purple-500" />
-              Live Inbound Feed
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-1">
-              {inboundEmails.length > 0 ? (
-                inboundEmails.map((email, i) => (
-                  <InboundEmailItem
-                    key={i}
-                    subject={email.subject}
-                    sender={email.sender}
-                    domain={email.domain || 'unknown'}
-                    messageType={email.messageType || 'reply'}
-                  />
-                ))
-              ) : (
-                <div className="text-center py-8 text-slate-500">
-                  <p>No inbound emails received yet.</p>
-                </div>
-              )}
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Access Credentials */}
-      {systemStatus.status === 'installed' && (
-        <Card className="glass-card">
-          <CardHeader className="pb-4">
-            <CardTitle className="text-lg font-semibold text-white flex items-center gap-2">
-              <Key className="w-5 h-5 text-blue-500" />
-              Access Credentials
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              <div className="space-y-1">
-                <p className="text-xs text-muted-foreground uppercase">SMTP Host</p>
-                <p className="text-sm font-mono text-white">{systemStatus.server_ip} (Port 2525)</p>
-              </div>
-              <div className="space-y-1">
-                <p className="text-xs text-muted-foreground uppercase">Roundcube / IMAP Username</p>
-                <p className="text-sm font-mono text-white">{systemStatus.smtp_user || 'admin'}</p>
-              </div>
-              <div className="space-y-1">
-                <p className="text-xs text-muted-foreground uppercase">Password</p>
-                <div className="flex items-center gap-2">
-                  <p className="text-sm font-mono text-white bg-slate-900 px-2 py-1 rounded">{systemStatus.smtp_pass}</p>
-                </div>
-              </div>
-            </div>
-
-            {/* SSH Credentials Section */}
-            <div className="mt-6 pt-4 border-t border-border/50 grid grid-cols-1 md:grid-cols-3 gap-6">
-              <div className="space-y-1">
-                <p className="text-xs text-muted-foreground uppercase">SSH Host</p>
-                <p className="text-sm font-mono text-white">{systemStatus.server_ip} (Port 22)</p>
-              </div>
-              <div className="space-y-1">
-                <p className="text-xs text-muted-foreground uppercase">SSH Username</p>
-                <p className="text-sm font-mono text-white">{systemStatus.ssh_user || 'root'}</p>
-              </div>
-              <div className="space-y-1">
-                <p className="text-xs text-muted-foreground uppercase">SSH Password</p>
-                <div className="flex items-center gap-2">
-                  <p className="text-sm font-mono text-white bg-slate-900 px-2 py-1 rounded">{systemStatus.ssh_pass}</p>
-                </div>
-              </div>
-            </div>
-
-            {/* Standard Mailboxes Section */}
-            <div className="mt-6 pt-4 border-t border-border/50">
-              <p className="text-xs text-muted-foreground uppercase mb-2">Standard Mailboxes (Created for each domain)</p>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-                {['postmaster', 'abuse', 'reply', 'support'].map(user => (
-                  <div key={user} className="bg-slate-900/50 p-2 rounded text-xs text-slate-300 font-mono border border-slate-700/50">
-                    {user}@&lt;domain&gt;
-                  </div>
-                ))}
-              </div>
-              <p className="text-xs text-slate-500 mt-2">
-                * Password for all mailboxes is the same as the <strong>SMTP Password</strong> above.
-              </p>
-            </div>
-
-            <div className="mt-4 pt-4 border-t border-border/50">
-              <p className="text-xs text-slate-400">
-                <span className="font-semibold text-blue-400">Note:</span> Use these credentials for SMTP authentication (Port 2525) and Roundcube login.
-              </p>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Configuration Deployment */}
-      <Card className="glass-card">
-        <CardHeader className="pb-4">
-          <CardTitle className="text-lg font-semibold text-white flex items-center gap-2">
-            <FileText className="w-5 h-5 text-blue-500" />
-            Configuration Deployment
+      {/* Live Inbound Feed - Full Width now */}
+      <Card className="glass-card dashboard-card">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-white">
+            <Mail className="w-5 h-5 text-purple-500" />
+            Live Inbound Feed
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="flex items-center gap-4">
-            <Select defaultValue="v2.4.1">
-              <SelectTrigger className="w-[280px] bg-slate-900 border-slate-700">
-                <SelectValue placeholder="Select version" />
-              </SelectTrigger>
-              <SelectContent className="bg-slate-900 border-slate-700">
-                <SelectItem value="v2.4.1">v2.4.1 — Authoritative Mode</SelectItem>
-                <SelectItem value="v2.4.0">v2.4.0 — Standard Mode</SelectItem>
-                <SelectItem value="v2.3.9">v2.3.9 — Legacy Mode</SelectItem>
-              </SelectContent>
-            </Select>
-            <Button className="bg-blue-600 hover:bg-blue-700">
-              Deploy Configuration
-            </Button>
+          <div className="space-y-1">
+            {inboundEmails.length > 0 ? (
+              inboundEmails.map((email, i) => (
+                <InboundEmailItem
+                  key={i}
+                  subject={email.subject}
+                  sender={email.sender}
+                  domain={email.domain || 'unknown'}
+                  messageType={email.messageType || 'reply'}
+                />
+              ))
+            ) : (
+              <div className="text-center py-8 text-slate-500">
+                <p>No inbound emails received yet.</p>
+              </div>
+            )}
           </div>
         </CardContent>
       </Card>
+
+
+
+
 
       {/* Quick Links */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -485,11 +300,7 @@ export function Dashboard() {
           icon={Mail}
           href={`http://${window.location.hostname}:80`}
         />
-        <QuickLinkCard
-          title="PowerDNS Admin"
-          icon={Globe}
-          href={`http://${window.location.hostname}:9191`}
-        />
+
       </div>
     </div>
   );

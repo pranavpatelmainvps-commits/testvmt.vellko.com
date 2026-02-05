@@ -5,13 +5,16 @@ import {
   Globe,
   Zap,
   User,
-  Settings
+  Settings,
+  LogOut,
+  Shield
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useAuth } from '@/context/AuthContext';
 
 interface SidebarProps {
   currentView: string;
-  onViewChange: (view: 'dashboard' | 'deploy' | 'dns' | 'logs' | 'pmta-config') => void;
+  onViewChange: (view: 'dashboard' | 'deploy' | 'dns' | 'logs' | 'pmta-config' | 'admin') => void;
 }
 
 const navItems = [
@@ -22,6 +25,7 @@ const navItems = [
 ];
 
 export function Sidebar({ currentView, onViewChange }: SidebarProps) {
+  const { user, logout } = useAuth();
   return (
     <aside className="w-64 bg-[hsl(222,47%,5%)] border-r border-[hsl(217,33%,15%)] flex flex-col">
       {/* Brand */}
@@ -59,6 +63,24 @@ export function Sidebar({ currentView, onViewChange }: SidebarProps) {
               </li>
             );
           })}
+
+          {/* Admin Panel - Only visible to admins */}
+          {user?.role === 'admin' && (
+            <li>
+              <button
+                onClick={() => onViewChange('admin')}
+                className={cn(
+                  "w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all duration-200",
+                  currentView === 'admin'
+                    ? "bg-purple-600 text-white shadow-lg shadow-purple-900/20"
+                    : "text-slate-400 hover:bg-slate-800/50 hover:text-white"
+                )}
+              >
+                <Shield className="w-5 h-5" />
+                Admin Panel
+              </button>
+            </li>
+          )}
         </ul>
       </nav>
 
@@ -69,9 +91,12 @@ export function Sidebar({ currentView, onViewChange }: SidebarProps) {
             <User className="w-4 h-4 text-white" />
           </div>
           <div className="flex-1 min-w-0">
-            <p className="text-sm font-medium text-white truncate">Admin</p>
-            <p className="text-xs text-muted-foreground truncate">Premium Plan</p>
+            <p className="text-sm font-medium text-white truncate">{user?.name || 'User'}</p>
+            <p className="text-xs text-muted-foreground truncate">{user?.email || 'user@example.com'}</p>
           </div>
+          <button onClick={logout} className="p-2 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-red-400 transition-colors" title="Sign Out">
+            <LogOut className="w-4 h-4" />
+          </button>
         </div>
       </div>
     </aside>

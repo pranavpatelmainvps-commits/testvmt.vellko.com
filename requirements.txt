@@ -1,3 +1,7 @@
 flask
 paramiko
 requests
+flask-sqlalchemy
+flask-jwt-extended
+flask-bcrypt
+flask-cors

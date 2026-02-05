@@ -10,7 +10,11 @@ import requests
 import socket
 import string
 import secrets
-from datetime import datetime
+from datetime import datetime, timedelta
+from flask_sqlalchemy import SQLAlchemy
+from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity, get_jwt
+from flask_bcrypt import Bcrypt
+from flask_cors import CORS
 
 # Constants
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -33,24 +37,213 @@ PMTA_FILES = [
 # Use relative path suitable for Docker container (mapped volume)
 INSTALL_LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "install_progress.log")
 
+
 app = Flask(__name__)
+CORS(app) # Enable CORS for frontend
+
+# Configuration
+app.config['SECRET_KEY'] = 'dev-secret-key-change-in-production'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///users.db'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['JWT_SECRET_KEY'] = 'jwt-secret-key-change-in-production'
+app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(days=1)
+
+db = SQLAlchemy(app)
+bcrypt = Bcrypt(app)
+jwt = JWTManager(app)
+
+# --- Database Models ---
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False)
+    email = db.Column(db.String(120), unique=True, nullable=False)
+    password_hash = db.Column(db.String(255), nullable=False)
+    role = db.Column(db.String(20), default='user') # 'admin' or 'user'
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    def set_password(self, password):
+        self.password_hash = bcrypt.generate_password_hash(password).decode('utf-8')
+
+    def check_password(self, password):
+        return bcrypt.check_password_hash(self.password_hash, password)
+
+class Domain(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), unique=True, nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    
+class InboundEmail(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    subject = db.Column(db.String(255))
+    sender = db.Column(db.String(255))
+    domain = db.Column(db.String(100))
+    message_type = db.Column(db.String(50))
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+    blob_data = db.Column(db.JSON) # Store full payload
+
+
+# Initialize DB
+with app.app_context():
+    db.create_all()
+
+# --- Auth Routes ---
+@app.route("/api/auth/register", methods=["POST"])
+def register():
+    data = request.json
+    if User.query.filter_by(email=data['email']).first():
+        return jsonify({"error": "Email already registered"}), 400
+    
+    new_user = User(name=data['name'], email=data['email'], role=data.get('role', 'user'))
+    new_user.set_password(data['password'])
+    
+    db.session.add(new_user)
+    db.session.commit()
+    
+    return jsonify({"message": "User registered successfully"}), 201
+
+@app.route("/api/auth/login", methods=["POST"])
+def login():
+    data = request.json
+    user = User.query.filter_by(email=data['email']).first()
+    
+    if user and user.check_password(data['password']):
+        token = create_access_token(identity=user.id, additional_claims={"role": user.role})
+        return jsonify({
+            "token": token,
+            "user": {
+                "id": user.id,
+                "name": user.name,
+                "email": user.email,
+                "role": user.role
+            }
+        })
+    return jsonify({"error": "Invalid credentials"}), 401
+
+@app.route("/api/auth/me", methods=["GET"])
+@jwt_required()
+def me():
+    current_user_id = get_jwt_identity()
+    user = User.query.get(current_user_id)
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+        
+    return jsonify({
+        "id": user.id,
+        "name": user.name,
+        "email": user.email,
+        "role": user.role
+    })
+
+# --- Authenticated Endpoints Wrapper (Example) ---
+# To protect other routes, use @jwt_required()
+
+# ============= ADMIN ENDPOINTS =============
+@app.route("/api/admin/users", methods=["GET"])
+@jwt_required()
+def get_all_users():
+    claims = get_jwt()
+    if claims.get('role') != 'admin':
+        return jsonify({"error": "Admin access required"}), 403
+    
+    users = User.query.all()
+    return jsonify({
+        "users": [{
+            "id": u.id,
+            "name": u.name,
+            "email": u.email,
+            "role": u.role,
+            "created_at": u.created_at.isoformat()
+        } for u in users]
+    })
+
+@app.route("/api/admin/users/<int:user_id>", methods=["PUT"])
+@jwt_required()
+def update_user(user_id):
+    claims = get_jwt()
+    if claims.get('role') != 'admin':
+        return jsonify({"error": "Admin access required"}), 403
+    
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    
+    data = request.json
+    if 'name' in data:
+        user.name = data['name']
+    if 'email' in data:
+        user.email = data['email']
+    if 'role' in data:
+        user.role = data['role']
+    if 'password' in data and data['password']:
+        user.password_hash = bcrypt.generate_password_hash(data['password']).decode('utf-8')
+    
+    db.session.commit()
+    return jsonify({"message": "User updated successfully"})
+
+@app.route("/api/admin/users/<int:user_id>", methods=["DELETE"])
+@jwt_required()
+def delete_user(user_id):
+    claims = get_jwt()
+    if claims.get('role') != 'admin':
+        return jsonify({"error": "Admin access required"}), 403
+    
+    current_user_id = get_jwt_identity()
+    if user_id == current_user_id:
+        return jsonify({"error": "Cannot delete your own account"}), 400
+    
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    
+    db.session.delete(user)
+    db.session.commit()
+    return jsonify({"message": "User deleted successfully"})
+
 
 RECEIVED_EMAILS = []
 
 @app.route("/api/inbound/webhook", methods=["POST"])
 def inbound_webhook():
     data = request.json
-    print(f"Received Inbound Mail Webhook: {data.get('subject')} from {data.get('sender')}")
-    RECEIVED_EMAILS.append(data)
-    # Keep only last 100 emails in memory
-    if len(RECEIVED_EMAILS) > 100:
-        RECEIVED_EMAILS.pop(0)
-        
-    return jsonify({"status": "received", "count": len(RECEIVED_EMAILS)})
+    domain_name = data.get('domain')
+    
+    # improved: Find user owning this domain
+    domain_record = Domain.query.filter_by(name=domain_name).first()
+    
+    # Fallback to first user (Admin) if no mapping found, so data isn't lost
+    user_id = domain_record.user_id if domain_record else 1
+    
+    email_entry = InboundEmail(
+        user_id=user_id,
+        subject=data.get('subject'),
+        sender=data.get('sender'),
+        domain=domain_name,
+        message_type=data.get('message_type'),
+        blob_data=data
+    )
+    
+    db.session.add(email_entry)
+    db.session.commit()
+    
+    print(f"Stored Inbound Mail: {data.get('subject')} for User ID {user_id}")
+    return jsonify({"status": "received", "id": email_entry.id})
 
 @app.route("/api/inbound/emails", methods=["GET"])
+@jwt_required()
 def get_inbound_emails():
-    return jsonify({"emails": list(reversed(RECEIVED_EMAILS))})
+    user_id = get_jwt_identity()
+    emails = InboundEmail.query.filter_by(user_id=user_id).order_by(InboundEmail.timestamp.desc()).limit(100).all()
+    
+    result = [{
+        "subject": e.subject,
+        "sender": e.sender,
+        "domain": e.domain,
+        "messageType": e.message_type,
+        "timestamp": e.timestamp.isoformat()
+    } for e in emails]
+    
+    return jsonify({"emails": result})
 
 PMTA_TEMPLATE = "pmta-advanced.sh.tmpl"
 BASE_INSTALLER = "pmta-install.sh.tmpl"
@@ -61,6 +254,7 @@ PLATFORM_SMTP_HOSTNAME = "smtp.quicklendings.com"
 PMTA_FILES = ["PowerMTA.rpm", "pmtad", "pmtahttpd", "license"]
 
 @app.route("/api/config/fetch", methods=["POST"])
+@jwt_required()
 def fetch_config():
     data = request.json
     server_ip = data.get("server_ip")
@@ -79,6 +273,7 @@ def fetch_config():
         return jsonify({"status": "error", "message": str(e)})
 
 @app.route("/api/config/save", methods=["POST"])
+@jwt_required()
 def save_config():
     data = request.json
     server_ip = data.get("server_ip")
