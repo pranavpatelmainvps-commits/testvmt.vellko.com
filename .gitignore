@@ -1,0 +1,8 @@
+*.zip
+*.rar
+*.rpm
+*.tar.gz
+deployment_v2/
+temp_dashboard_extract/
+__pycache__/
+*.log

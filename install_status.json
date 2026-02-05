@@ -1,0 +1,23 @@
+{
+  "status": "installed",
+  "server_ip": "192.119.169.5",
+  "ssh_user": "root",
+  "ssh_pass": "python",
+  "smtp_user": "admin",
+  "smtp_pass": "password",
+  "roundcube_url": "http://212.107.15.197",
+  "installed_at": "2026-02-04 19:57:57",
+  "mappings": [
+    {
+      "domain": "quicklendings.com",
+      "ip": "192.119.169.123"
+    }
+  ],
+  "ptr_results": [
+    {
+      "ip": "192.119.169.123",
+      "required": "mail.quicklendings.com",
+      "current": null
+    }
+  ]
+}

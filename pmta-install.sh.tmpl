@@ -33,7 +33,7 @@ if ! grep -q "^$SERVER_IP\s\+$DOMAIN" /etc/hosts; then
   echo "$SERVER_IP $DOMAIN" >> /etc/hosts
 fi
 # ---------------- Preflight checks ----------------
-for f in /tmp/PowerMTA.rpm /tmp/pmtad /tmp/pmtahttpd /tmp/license; do
+for f in /app/PowerMTA.rpm /app/pmtad /app/pmtahttpd /app/license; do
   if [[ ! -f "$f" ]]; then
     echo "ERROR: Required file missing: $f"
     exit 1
@@ -50,22 +50,22 @@ fi
 if ! rpm -q PowerMTA >/dev/null 2>&1; then
   echo "PowerMTA not installed, installing from local RPM"
 
-  if [[ ! -f "/tmp/PowerMTA.rpm" ]]; then
-    echo "ERROR: /tmp/PowerMTA.rpm not found"
+  if [[ ! -f "/app/PowerMTA.rpm" ]]; then
+    echo "ERROR: /app/PowerMTA.rpm not found"
     exit 1
   fi
 
-  rpm -Uvh --nosignature --nodigest /tmp/PowerMTA.rpm
+  rpm -Uvh --nosignature --nodigest /app/PowerMTA.rpm
 else
   echo "PowerMTA already installed"
 fi
 
 
 # ---------------- PMTA License ----------------
-if [[ -f "/tmp/license" ]]; then
+if [[ -f "/app/license" ]]; then
   echo "Installing PMTA license"
   mkdir -p /etc/pmta
-  cp /tmp/license /etc/pmta/license
+  cp /app/license /etc/pmta/license
   chmod 600 /etc/pmta/license
 else
   echo "ERROR: PMTA license file missing"
@@ -78,7 +78,7 @@ systemctl stop pmta || true
 
 # ---------------- Replace PMTA core binaries ----------------
 for BIN in pmtad pmtahttpd; do
-  SRC="/tmp/$BIN"
+  SRC="/app/$BIN"
   DST="/usr/sbin/$BIN"
 
   if [[ ! -f "$SRC" ]]; then

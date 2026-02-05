@@ -15,14 +15,16 @@ services:
     restart: unless-stopped
 
   pmta-dashboard:
-    build: .
+    build:
+      context: .
+      dockerfile: docker/dashboard/Dockerfile
     ports:
       - "5000:5000"
     volumes:
       - .:/app
       - maildata:/var/mail/vhosts
     environment:
-      - FLASK_ENV=development
+      - FLASK_ENV=production
       - MAIL_ROOT=/var/mail/vhosts
       - DB_HOST=mariadb
       - DB_USER=roundcube
@@ -32,7 +34,9 @@ services:
       - mariadb
 
   inbound-processor:
-    build: .
+    build:
+      context: .
+      dockerfile: docker/dashboard/Dockerfile
     command: [ "python", "inbound_processor.py" ]
     volumes:
       - .:/app
@@ -81,7 +85,7 @@ services:
   roundcube:
     image: roundcube/roundcubemail:latest
     ports:
-      - "8000:80"
+      - "80:80"
     environment:
       - ROUNDCUBEMAIL_DB_TYPE=mysql
       - ROUNDCUBEMAIL_DB_HOST=mariadb
