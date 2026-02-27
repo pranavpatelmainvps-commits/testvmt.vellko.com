@@ -15,9 +15,7 @@ services:
     restart: unless-stopped
 
   pmta-dashboard:
-    build:
-      context: .
-      dockerfile: docker/dashboard/Dockerfile
+    image: pmta-dashboard-pmta-dashboard:latest
     ports:
       - "5000:5000"
     volumes:
@@ -85,7 +83,7 @@ services:
   roundcube:
     image: roundcube/roundcubemail:latest
     ports:
-      - "80:80"
+      - "8081:80"
     environment:
       - ROUNDCUBEMAIL_DB_TYPE=mysql
       - ROUNDCUBEMAIL_DB_HOST=mariadb

@@ -1,13 +1,21 @@
-*.zip
-*.rar
-*.rpm
-*.tar.gz
-deployment_v2/
-temp_dashboard_extract/
+# secrets
+.env
+*.env
+
+# python
 __pycache__/
+*.pyc
+
+# logs
 *.log
 
-# State files (Do not push these!)
-install_status.json
-install_progress.log
-debug_logs.txt
+# runtime
+install_status*.json
+install_progress*.log
+
+# backups
+*.bak
+static.bak.*
+
+# temp
+temp*

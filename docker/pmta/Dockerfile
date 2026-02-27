@@ -1,8 +1,16 @@
 FROM almalinux:8
 
 # Install dependencies
-RUN yum install -y openssh-server perl procps net-tools iproute libnsl && \
-    yum clean all
+RUN yum install -y \
+    openssh-server \
+    perl \
+    procps \
+    net-tools \
+    iproute \
+    libnsl \
+    which \
+    initscripts \
+    && yum clean all
 
 # Configure SSH
 RUN mkdir /var/run/sshd && \
