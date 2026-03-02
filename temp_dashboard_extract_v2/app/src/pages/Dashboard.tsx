@@ -248,7 +248,7 @@ export function Dashboard() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-white">Dashboard</h1>
-          <p className="text-sm text-muted-foreground">Monitor your PowerMTA infrastructure</p>
+          <p className="text-sm text-muted-foreground">Monitor your VelkoMTA infrastructure</p>
         </div>
 
       </div>

@@ -245,7 +245,7 @@ export function Deployment() {
               <Server className="w-12 h-12 text-slate-600 mb-4" />
               <h3 className="text-lg font-semibold text-white mb-2">No Servers Yet</h3>
               <p className="text-muted-foreground mb-6 max-w-sm">
-                Add your first server to get started with PowerMTA deployment.
+                Add your first server to get started with VelkoMTA deployment.
               </p>
               <Button
                 onClick={() => {
@@ -536,7 +536,7 @@ export function Deployment() {
               <table className="w-full">
                 <thead>
                   <tr className="border-b border-border">
-                    <th className="text-left py-3 px-4 text-xs font-medium text-muted-foreground uppercase tracking-wider">PMTA Domain</th>
+                    <th className="text-left py-3 px-4 text-xs font-medium text-muted-foreground uppercase tracking-wider">VelkoMTA Domain</th>
                     <th className="text-left py-3 px-4 text-xs font-medium text-muted-foreground uppercase tracking-wider">Sending IP</th>
                     <th className="text-left py-3 px-4 text-xs font-medium text-muted-foreground uppercase tracking-wider w-20">Action</th>
                   </tr>

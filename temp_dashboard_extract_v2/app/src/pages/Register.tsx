@@ -87,7 +87,7 @@ export function Register({ onSwitchToLogin }: RegisterProps) {
                     </div>
                     <CardTitle className="text-2xl text-center text-white font-bold">Create Account</CardTitle>
                     <CardDescription className="text-center text-slate-400">
-                        Join the PowerMTA Dashboard
+                        Join the VelkoMTA Dashboard
                     </CardDescription>
                 </CardHeader>
                 <CardContent>
@@ -191,7 +191,7 @@ export function Register({ onSwitchToLogin }: RegisterProps) {
 
             {/* Footer */}
             <div className="absolute bottom-4 text-xs text-slate-600">
-                &copy; 2026 PMTA Dashboard.
+                &copy; 2026 VelkoMTA Dashboard.
             </div>
         </div>
     );

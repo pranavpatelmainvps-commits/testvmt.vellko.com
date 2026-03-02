@@ -280,7 +280,7 @@ def exec_sudo_command(ssh, command, password):
 
 # --- Auth Routes ---
 @app.route("/api/auth/register", methods=["POST"])
-@limiter.limit("50 per hour")
+@limiter.limit("5 per hour")
 def register():
     data = request.json
     first_name = data.get('first_name', '').strip()
@@ -339,7 +339,7 @@ def register():
     verify_link = f"{BASE_URL}/verify?token={token}"
     
     html_content = f"""
-    <h3>Welcome to PMTA Dashboard!</h3>
+    <h3>Welcome to VelkoMTA Dashboard!</h3>
     <p>Please verify your account by clicking the link below:</p>
     <a href="{verify_link}">Verify Email</a>
     <br>
@@ -348,7 +348,7 @@ def register():
     
     threading.Thread(
         target=send_email,
-        args=(data['email'], "Welcome to PowerMTA Dashboard", html_content)
+        args=(data['email'], "Welcome to VelkoMTA Dashboard", html_content)
     ).start()
     
     return jsonify({"message": "User registered successfully. Please check your email to verify."}), 201
@@ -604,8 +604,8 @@ def admin_smtp_test():
          
     success = send_email(
         target_email, 
-        "SMTP Test - PMTA Dashboard", 
-        "<h3>SMTP Test</h3><p>This is a test email from your PMTA Dashboard backend.</p>"
+        "SMTP Test - VelkoMTA Dashboard", 
+        "<h3>SMTP Test</h3><p>This is a test email from your VelkoMTA Dashboard backend.</p>"
     )
     
     if success:

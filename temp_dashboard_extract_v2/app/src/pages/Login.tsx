@@ -58,7 +58,7 @@ export function Login({ onSwitchToRegister }: LoginProps) {
                     </div>
                     <CardTitle className="text-2xl text-center text-white font-bold">Welcome Back</CardTitle>
                     <CardDescription className="text-center text-slate-400">
-                        Sign in to access your PMTA Dashboard
+                        Sign in to access your VelkoMTA Dashboard
                     </CardDescription>
                 </CardHeader>
                 <CardContent>
@@ -116,7 +116,7 @@ export function Login({ onSwitchToRegister }: LoginProps) {
 
             {/* Footer / Copyright */}
             <div className="absolute bottom-4 text-xs text-slate-600">
-                &copy; 2026 PMTA Dashboard v2.0. Secure Access Required.
+                &copy; 2026 VelkoMTA Dashboard v2.0. Secure Access Required.
             </div>
         </div>
     );

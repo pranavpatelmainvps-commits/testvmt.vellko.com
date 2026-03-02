@@ -1873,7 +1873,7 @@ export function PMTAConfig() {
           <Server className="w-12 h-12 text-slate-600 mx-auto mb-4" />
           <h3 className="text-lg font-semibold text-white mb-2">No Installed Servers</h3>
           <p className="text-muted-foreground max-w-sm">
-            Go to <strong>New Deployment</strong> first to install PowerMTA on a server, then come back to manage its configuration.
+            Go to <strong>New Deployment</strong> first to install VelkoMTA on a server, then come back to manage its configuration.
           </p>
         </div>
       </div>
@@ -1904,9 +1904,9 @@ export function PMTAConfig() {
         <div>
           <h1 className="text-2xl font-bold text-white flex items-center gap-2">
             <Settings className="w-6 h-6 text-blue-500" />
-            PMTA Configuration
+            VelkoMTA Configuration
           </h1>
-          <p className="text-sm text-muted-foreground">Manage PowerMTA settings, VMTAs, pools, and rules</p>
+          <p className="text-sm text-muted-foreground">Manage VelkoMTA settings, VMTAs, pools, and rules</p>
         </div>
         <div className="flex items-center gap-2">
           {/* Server Selector */}
@@ -2054,6 +2054,6 @@ export function PMTAConfig() {
           />
         </TabsContent>
       </Tabs>
-    </div>
+    </div >
   );
 }

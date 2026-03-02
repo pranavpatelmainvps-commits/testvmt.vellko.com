@@ -84,7 +84,7 @@ export function InstalledServers() {
                         Installed Servers
                     </h1>
                     <p className="text-sm text-muted-foreground mt-1">
-                        Manage your deployed PowerMTA servers
+                        Manage your deployed VelkoMTA servers
                     </p>
                 </div>
                 <Button variant="ghost" size="sm" onClick={fetchServers} className="text-muted-foreground">
@@ -105,7 +105,7 @@ export function InstalledServers() {
                         <Server className="w-12 h-12 text-slate-600 mb-4" />
                         <h3 className="text-lg font-semibold text-white mb-2">No Installed Servers</h3>
                         <p className="text-muted-foreground max-w-sm">
-                            Go to <strong>New Deployment</strong> to install PowerMTA on a server.
+                            Go to <strong>New Deployment</strong> to install VelkoMTA on a server.
                         </p>
                     </CardContent>
                 </Card>
@@ -182,7 +182,7 @@ export function InstalledServers() {
                                                 size="sm"
                                                 onClick={() => window.open(`http://${server.host_ip}:8080`, '_blank')}
                                                 className="border-slate-700 text-slate-300"
-                                                title="Open PMTA Web Monitor"
+                                                title="Open VelkoMTA Web Monitor"
                                             >
                                                 <span className="flex items-center gap-1"><ExternalLink className="w-4 h-4" /> Monitor</span>
                                             </Button>

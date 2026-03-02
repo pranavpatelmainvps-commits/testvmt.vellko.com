@@ -23,7 +23,7 @@ const navItems = [
   { id: 'deploy', label: 'New Deployment', icon: Rocket },
   { id: 'servers', label: 'Installed Servers', icon: Server },
   { id: 'dns', label: 'DNS Manager', icon: Globe },
-  { id: 'pmta-config', label: 'PMTA Config', icon: Settings },
+  { id: 'pmta-config', label: 'VelkoMTA Config', icon: Settings },
 ];
 
 export function Sidebar({ currentView, onViewChange }: SidebarProps) {
@@ -36,7 +36,7 @@ export function Sidebar({ currentView, onViewChange }: SidebarProps) {
           <Zap className="w-5 h-5 text-white" />
         </div>
         <div>
-          <h1 className="text-lg font-bold text-white tracking-tight">PowerMTA</h1>
+          <h1 className="text-lg font-bold text-white tracking-tight">VelkoMTA</h1>
           <p className="text-xs text-muted-foreground">Enterprise Cloud Console</p>
         </div>
       </div>
