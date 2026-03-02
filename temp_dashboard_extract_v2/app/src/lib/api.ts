@@ -16,9 +16,10 @@ export async function fetchApi<T>(endpoint: string, options?: RequestInit): Prom
 
     if (!response.ok) {
         if (response.status === 401) {
-            // Optional: Redirect to login or dispatch logout event
-            // window.location.href = '/login'; // Use with caution in SPA
-            localStorage.removeItem('token'); // Clear invalid token
+            // Force user logout on token expiration 
+            localStorage.removeItem('token');
+            localStorage.removeItem('user');
+            window.location.reload(); // Instantly reset React state to Login screen
         }
         if (response.status === 429) {
             throw new Error('Too many requests. Please wait a moment and try again.');
