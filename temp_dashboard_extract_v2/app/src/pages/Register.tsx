@@ -9,7 +9,8 @@ interface RegisterProps {
 }
 
 export function Register({ onSwitchToLogin }: RegisterProps) {
-    const [name, setName] = useState('');
+    const [firstName, setFirstName] = useState('');
+    const [lastName, setLastName] = useState('');
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [error, setError] = useState('');
@@ -32,6 +33,11 @@ export function Register({ onSwitchToLogin }: RegisterProps) {
         setError('');
         setSuccess('');
 
+        if (firstName.trim().length < 2) {
+            setError('First name must be at least 2 characters long.');
+            return;
+        }
+
         if (!validateEmail(email)) {
             setError('Please enter a valid email address (e.g., user@example.com)');
             return;
@@ -47,11 +53,12 @@ export function Register({ onSwitchToLogin }: RegisterProps) {
         try {
             await fetchApi('/api/auth/register', {
                 method: 'POST',
-                body: JSON.stringify({ name, email, password, role: 'user' }), // Default role user
+                body: JSON.stringify({ first_name: firstName, last_name: lastName, email, password, role: 'user' }), // Default role user
             });
 
             setSuccess('Account created successfully! You can now sign in.');
-            setName('');
+            setFirstName('');
+            setLastName('');
             setEmail('');
             setPassword('');
             // Optional: Auto-switch to login after delay
@@ -96,18 +103,34 @@ export function Register({ onSwitchToLogin }: RegisterProps) {
                             </div>
                         )}
 
-                        <div className="space-y-2">
-                            <label className="text-sm font-medium text-slate-300 ml-1">Full Name</label>
-                            <div className="relative group">
-                                <User className="absolute left-3 top-2.5 h-5 w-5 text-slate-500 group-focus-within:text-green-400 transition-colors" />
-                                <input
-                                    type="text"
-                                    placeholder="John Doe"
-                                    className="w-full bg-slate-900/50 border border-slate-700 rounded-md py-2 pl-10 pr-4 text-white placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-green-500/20 focus:border-green-500 transition-all"
-                                    value={name}
-                                    onChange={(e) => setName(e.target.value)}
-                                    required
-                                />
+                        <div className="grid grid-cols-2 gap-4">
+                            <div className="space-y-2">
+                                <label className="text-sm font-medium text-slate-300 ml-1">First Name</label>
+                                <div className="relative group">
+                                    <User className="absolute left-3 top-2.5 h-5 w-5 text-slate-500 group-focus-within:text-green-400 transition-colors" />
+                                    <input
+                                        type="text"
+                                        placeholder="John"
+                                        className="w-full bg-slate-900/50 border border-slate-700 rounded-md py-2 pl-10 pr-3 text-white placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-green-500/20 focus:border-green-500 transition-all"
+                                        value={firstName}
+                                        onChange={(e) => setFirstName(e.target.value)}
+                                        required
+                                        minLength={2}
+                                    />
+                                </div>
+                            </div>
+
+                            <div className="space-y-2">
+                                <label className="text-sm font-medium text-slate-300 ml-1">Last Name</label>
+                                <div className="relative group">
+                                    <input
+                                        type="text"
+                                        placeholder="Doe (Optional)"
+                                        className="w-full bg-slate-900/50 border border-slate-700 rounded-md py-2 px-3 text-white placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-green-500/20 focus:border-green-500 transition-all"
+                                        value={lastName}
+                                        onChange={(e) => setLastName(e.target.value)}
+                                    />
+                                </div>
                             </div>
                         </div>
 
@@ -139,6 +162,9 @@ export function Register({ onSwitchToLogin }: RegisterProps) {
                                     required
                                 />
                             </div>
+                            <p className="text-xs text-slate-400 mt-1 leading-relaxed">
+                                Requires at least: 2 uppercase, 2 lowercase, 2 numbers, and 2 special characters (@$!%*#?&).
+                            </p>
                         </div>
 
                         <Button

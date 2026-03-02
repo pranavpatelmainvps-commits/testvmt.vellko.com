@@ -283,8 +283,15 @@ def exec_sudo_command(ssh, command, password):
 @limiter.limit("50 per hour")
 def register():
     data = request.json
+    first_name = data.get('first_name', '').strip()
+    last_name = data.get('last_name', '').strip()
     email = data.get('email', '')
     password = data.get('password', '')
+    
+    if len(first_name) < 2:
+        return jsonify({"error": "First name must be at least 2 characters long"}), 400
+        
+    full_name = f"{first_name} {last_name}".strip()
     
     # Strict Backend Validation
     email_regex = re.compile(r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$')
@@ -315,7 +322,7 @@ def register():
         role = 'admin'
         
     new_user = User(
-        name=data['name'], 
+        name=full_name, 
         email=data['email'], 
         role=role,
         verification_token=token,
