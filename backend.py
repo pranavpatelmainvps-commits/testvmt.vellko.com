@@ -280,7 +280,7 @@ def exec_sudo_command(ssh, command, password):
 
 # --- Auth Routes ---
 @app.route("/api/auth/register", methods=["POST"])
-@limiter.limit("5 per hour")
+@limiter.limit("50 per hour")
 def register():
     data = request.json
     email = data.get('email', '')
@@ -291,9 +291,17 @@ def register():
     if not email_regex.match(email):
         return jsonify({"error": "Invalid email address format"}), 400
         
-    pwd_regex = re.compile(r'^(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d@$!%*#?&]{8,}$')
-    if not pwd_regex.match(password):
-        return jsonify({"error": "Password must be at least 8 characters long and contain at least one letter and one number"}), 400
+    # Password must contain at least 2 uppercase letters, 2 lowercase letters, 2 numbers, and 2 special characters.
+    if len(password) < 8:
+        return jsonify({"error": "Password must be at least 8 characters long."}), 400
+    
+    upper = sum(1 for c in password if c.isupper())
+    lower = sum(1 for c in password if c.islower())
+    digits = sum(1 for c in password if c.isdigit())
+    specials = sum(1 for c in password if c in '@$!%*#?&')
+    
+    if upper < 2 or lower < 2 or digits < 2 or specials < 2:
+        return jsonify({"error": "Password must contain at least 2 uppercase letters, 2 lowercase letters, 2 numbers, and 2 special characters (@$!%*#?&)."}), 400
 
     if User.query.filter_by(email=email).first():
         return jsonify({"error": "Email already registered"}), 400

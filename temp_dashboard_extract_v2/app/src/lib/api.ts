@@ -20,7 +20,11 @@ export async function fetchApi<T>(endpoint: string, options?: RequestInit): Prom
             // window.location.href = '/login'; // Use with caution in SPA
             localStorage.removeItem('token'); // Clear invalid token
         }
-        const error = await response.json().catch(() => ({ error: 'Unknown error' }));
+        if (response.status === 429) {
+            throw new Error('Too many requests. Please wait a moment and try again.');
+        }
+
+        const error = await response.json().catch(() => ({ error: `HTTP ${response.status} Error: Unexpected Response Format` }));
         throw new Error(error.error || `HTTP ${response.status}`);
     }
 

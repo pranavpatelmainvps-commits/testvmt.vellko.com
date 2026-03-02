@@ -22,8 +22,8 @@ export function Register({ onSwitchToLogin }: RegisterProps) {
     };
 
     const validatePassword = (password: string) => {
-        // Minimum 8 characters, at least one letter and one number
-        const re = /^(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d@$!%*#?&]{8,}$/;
+        // Minimum 8 characters, at least 2 uppercase, 2 lowercase, 2 numbers, and 2 special characters
+        const re = /^(?=(?:.*[A-Z]){2})(?=(?:.*[a-z]){2})(?=(?:.*\d){2})(?=(?:.*[@$!%*#?&]){2})[A-Za-z\d@$!%*#?&]{8,}$/;
         return re.test(password);
     };
 
@@ -38,7 +38,7 @@ export function Register({ onSwitchToLogin }: RegisterProps) {
         }
 
         if (!validatePassword(password)) {
-            setError('Password must be at least 8 characters long and contain at least one letter and one number');
+            setError('Password must contain at least 2 uppercase letters, 2 lowercase letters, 2 numbers, and 2 special characters.');
             return;
         }
 
