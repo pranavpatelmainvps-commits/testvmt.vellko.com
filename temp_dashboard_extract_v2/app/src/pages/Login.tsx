@@ -85,7 +85,7 @@ export function Login({ onSwitchToRegister }: LoginProps) {
                         <div className="space-y-2">
                             <div className="flex justify-between items-center ml-1">
                                 <label className="text-sm font-medium text-slate-300">Password</label>
-                                <a href="#" className="text-xs text-blue-400 hover:text-blue-300">Forgot password?</a>
+                                <a href="/forgot-password" className="text-xs text-blue-400 hover:text-blue-300">Forgot password?</a>
                             </div>
                             <div className="relative group">
                                 <Lock className="absolute left-3 top-2.5 h-5 w-5 text-slate-500 group-focus-within:text-purple-400 transition-colors" />
