@@ -9,3 +9,4 @@ Flask-Migrate
 python-dotenv
 Flask-Limiter
 dnspython
+pymysql  
