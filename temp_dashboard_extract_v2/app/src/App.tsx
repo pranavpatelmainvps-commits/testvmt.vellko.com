@@ -5,13 +5,14 @@ import { Deployment } from '@/pages/Deployment';
 import { DNSManager } from '@/pages/DNSManager';
 import { PMTAConfig } from '@/pages/PMTAConfig';
 import { AdminPanel } from '@/pages/AdminPanel';
+import { InstalledServers } from '@/pages/InstalledServers';
 import { Toaster } from '@/components/ui/sonner';
 
 import { AuthProvider, useAuth } from '@/context/AuthContext';
 import { Login } from '@/pages/Login';
 import { Register } from '@/pages/Register';
 
-type View = 'dashboard' | 'deploy' | 'dns' | 'logs' | 'pmta-config' | 'admin';
+type View = 'dashboard' | 'deploy' | 'servers' | 'dns' | 'logs' | 'pmta-config' | 'admin';
 
 // Component for authenticated users (Main App)
 function AuthenticatedApp() {
@@ -24,6 +25,8 @@ function AuthenticatedApp() {
         return <Dashboard />;
       case 'deploy':
         return <Deployment />;
+      case 'servers':
+        return <InstalledServers />;
       case 'dns':
         return <DNSManager />;
       case 'pmta-config':

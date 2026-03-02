@@ -148,6 +148,7 @@ export function useDNSInfo() {
     dkim: string;
     dmarc: string;
     ns_records: Array<{ host: string; value: string }>;
+    formatted_records?: Array<{ type: string; host: string; value: string }>;
   } | null>(null);
 
   const fetchDNSInfo = useCallback(async (domain: string) => {

@@ -65,7 +65,7 @@ fi
 if [[ -f "/app/license" ]]; then
   echo "Installing PMTA license"
   mkdir -p /etc/pmta
-  cp /app/license /etc/pmta/license
+  \cp -f /app/license /etc/pmta/license
   chmod 600 /etc/pmta/license
 else
   echo "ERROR: PMTA license file missing"
@@ -87,10 +87,10 @@ for BIN in pmtad pmtahttpd; do
   fi
 
   echo "Removing existing $DST (if any)"
-  rm -f "$DST"
+  \rm -f "$DST"
 
   echo "Copying fresh $BIN to /usr/sbin"
-  cp "$SRC" "$DST"
+  \cp -f "$SRC" "$DST"
 
   chown root:root "$DST"
   chmod 755 "$DST"
@@ -105,10 +105,17 @@ done
 # ---------------- Main PMTA config ----------------
 echo "Preparing PMTA configuration"
 
-# Step 1: Copy default config if main config does not exist
-if [[ ! -f /etc/pmta/config ]]; then
-    cp /etc/pmta/config-defaults /etc/pmta/config
+# Step 1: Always copy default config to ensure a clean start, backup existing if present
+if [[ -f /etc/pmta/config ]]; then
+    \cp -f /etc/pmta/config /etc/pmta/config.bak.$(date +%s)
 fi
+
+# Create a clean, valid default configuration to pass parsing validation
+cat <<EOF > /etc/pmta/config
+log-file /var/log/pmta/pmtad.log
+<spool /var/spool/pmta>
+</spool>
+EOF
 
 # Step 2: Append your required working values safely
 ensure_line () {
@@ -138,6 +145,9 @@ ensure_line () {
 }
 
 ensure_line "host-name $DOMAIN"
+
+# PMTA 5+ requires a log-file directive
+grep -q "^log-file" /etc/pmta/config || echo "log-file /var/log/pmta/pmtad.log" >> /etc/pmta/config
 
 # ---------------- Filesystem ----------------
 mkdir -p /var/spool/pmta

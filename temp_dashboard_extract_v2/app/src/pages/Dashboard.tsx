@@ -209,24 +209,29 @@ export function Dashboard() {
   }, []);
 
   useEffect(() => {
-    // Poll for inbound emails
+    // Poll for inbound emails (with JWT auth)
     const fetchEmails = () => {
-      fetch('/api/inbound/emails')
-        .then(res => res.json())
+      const token = localStorage.getItem('token');
+      if (!token) return; // Skip polling if not authenticated
+
+      fetch('/api/inbound/emails', {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
+      })
+        .then(res => {
+          if (!res.ok) return { emails: [] }; // Silently handle 401/errors
+          return res.json();
+        })
         .then(data => {
-          // Transform backend format to UI format if needed
-          // Backend returns { "emails": [...] }
-          // Assuming backend structure matches or needs slight mapping
-          // For now, let's assume backend stores "subject", "sender", etc.
-          // If not, we might need to map it.
-          // The backend 'inbound_webhook' accepts data.
           setInboundEmails(data.emails || []);
         })
-        .catch(err => console.error('Failed to fetch emails:', err));
+        .catch(() => { }); // Suppress errors silently
     };
 
     fetchEmails();
-    const interval = setInterval(fetchEmails, 5000); // 5s poll
+    const interval = setInterval(fetchEmails, 10000); // 10s poll (reduced from 5s)
     return () => clearInterval(interval);
   }, []);
 

@@ -20,7 +20,7 @@ async function fetchApi<T>(endpoint: string, options?: RequestInit): Promise<T> 
 }
 
 // Hook for managing complete PMTA configuration
-export function usePMTAConfig() {
+export function usePMTAConfig(serverId?: number | null) {
   const [config, setConfig] = useState<PMTAConfig | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -28,10 +28,16 @@ export function usePMTAConfig() {
 
   // Fetch current configuration
   const fetchConfig = useCallback(async () => {
+    if (serverId === undefined || serverId === null) {
+      // No server selected, show default config
+      setConfig(null);
+      setError(null);
+      return;
+    }
     setIsLoading(true);
     setError(null);
     try {
-      const result = await fetchApi<PMTAConfig>('/config');
+      const result = await fetchApi<PMTAConfig>(`/config?server_id=${serverId}`);
       setConfig(result);
       setHasChanges(false);
       return result;
@@ -41,7 +47,7 @@ export function usePMTAConfig() {
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [serverId]);
 
   // Save configuration
   const saveConfig = useCallback(async (newConfig: PMTAConfig) => {

@@ -5,6 +5,8 @@ services:
     build:
       context: .
       dockerfile: docker/pmta/Dockerfile
+    hostname: server
+    domainname: testvmt.vellko.com
     ports:
       - "2222:22"
       - "2525:25"
@@ -15,7 +17,9 @@ services:
     restart: unless-stopped
 
   pmta-dashboard:
-    image: pmta-dashboard-pmta-dashboard:latest
+    build:
+      context: .
+      dockerfile: docker/dashboard/Dockerfile
     ports:
       - "5000:5000"
     volumes:
@@ -28,6 +32,8 @@ services:
       - DB_USER=roundcube
       - DB_PASS=password
       - DB_NAME=roundcubemail
+      - PDNS_API_KEY=MyDNSApiKey2026
+      - PDNS_HOST=192.119.169.12
     depends_on:
       - mariadb
 

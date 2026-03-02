@@ -26,6 +26,7 @@ import { Switch } from '@/components/ui/switch';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
+import { fetchApi as fetchApiGlobal } from '@/lib/api';
 import { usePMTAConfig, useVMTAManager, usePoolManager, useBounceRuleManager, useSourceManager, useUserManager, defaultPMTAConfig } from '@/hooks/usePMTAConfig';
 import type { VMTAConfig, VMTAPool, BounceRule, SMTPSource, SMTPUser } from '@/types';
 
@@ -1755,6 +1756,30 @@ function CredentialForm({ onUpdate, error }: { onUpdate: (ip: string, user: stri
 
 // Main PMTA Config Page
 export function PMTAConfig() {
+  const [selectedServerId, setSelectedServerId] = useState<number | null>(null);
+  const [servers, setServers] = useState<{ id: number; host_ip: string; ssh_username: string; ssh_port: number }[]>([]);
+  const [serversLoading, setServersLoading] = useState(true);
+
+  // Fetch servers on mount
+  useEffect(() => {
+    const loadServers = async () => {
+      try {
+        const result = await fetchApiGlobal<{ servers: typeof servers }>('/api/servers');
+        const list = result.servers || [];
+        setServers(list);
+        // Auto-select if only one server
+        if (list.length === 1) {
+          setSelectedServerId(list[0].id);
+        }
+      } catch {
+        setServers([]);
+      } finally {
+        setServersLoading(false);
+      }
+    };
+    loadServers();
+  }, []);
+
   const {
     config,
     isLoading,
@@ -1766,7 +1791,7 @@ export function PMTAConfig() {
     exportConfig,
     updateLocalConfig,
     updateCredentials,
-  } = usePMTAConfig();
+  } = usePMTAConfig(selectedServerId);
 
   const { addVMTA, updateVMTA, deleteVMTA, duplicateVMTA: duplicateVMTARaw } = useVMTAManager(config, updateLocalConfig);
 
@@ -1830,15 +1855,37 @@ export function PMTAConfig() {
     }
   };
 
-  // Import and Reset handlers are available from usePMTAConfig hook
-  // These can be used with file input dialogs in the future
+  if (serversLoading) {
+    return (
+      <div className="p-6 flex items-center justify-center h-full">
+        <div className="text-center">
+          <div className="w-8 h-8 border-2 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
+          <p className="text-slate-400">Loading servers...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (servers.length === 0) {
+    return (
+      <div className="p-6 flex items-center justify-center h-full">
+        <div className="text-center">
+          <Server className="w-12 h-12 text-slate-600 mx-auto mb-4" />
+          <h3 className="text-lg font-semibold text-white mb-2">No Installed Servers</h3>
+          <p className="text-muted-foreground max-w-sm">
+            Go to <strong>New Deployment</strong> first to install PowerMTA on a server, then come back to manage its configuration.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   if (isLoading && !config) {
     return (
       <div className="p-6 flex items-center justify-center h-full">
         <div className="text-center">
           <div className="w-8 h-8 border-2 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
-          <p className="text-slate-400">Loading configuration...</p>
+          <p className="text-slate-400">Loading configuration from {servers.find(s => s.id === selectedServerId)?.host_ip}...</p>
         </div>
       </div>
     );
@@ -1862,6 +1909,20 @@ export function PMTAConfig() {
           <p className="text-sm text-muted-foreground">Manage PowerMTA settings, VMTAs, pools, and rules</p>
         </div>
         <div className="flex items-center gap-2">
+          {/* Server Selector */}
+          <div className="flex items-center gap-2 mr-4">
+            <Server className="w-4 h-4 text-slate-400" />
+            <select
+              value={selectedServerId || ''}
+              onChange={(e) => setSelectedServerId(e.target.value ? Number(e.target.value) : null)}
+              className="bg-slate-900 border border-slate-700 text-white rounded-lg px-3 py-1.5 text-sm min-w-[180px]"
+            >
+              {servers.length > 1 && <option value="">Select server...</option>}
+              {servers.map(s => (
+                <option key={s.id} value={s.id}>{s.host_ip} ({s.ssh_username})</option>
+              ))}
+            </select>
+          </div>
           {hasChanges && (
             <Badge variant="outline" className="bg-yellow-500/10 text-yellow-500 border-yellow-500/20">
               <AlertCircle className="w-3 h-3 mr-1" />

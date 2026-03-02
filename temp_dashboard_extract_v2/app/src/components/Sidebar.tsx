@@ -7,19 +7,21 @@ import {
   User,
   Settings,
   LogOut,
-  Shield
+  Shield,
+  Server
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/context/AuthContext';
 
 interface SidebarProps {
   currentView: string;
-  onViewChange: (view: 'dashboard' | 'deploy' | 'dns' | 'logs' | 'pmta-config' | 'admin') => void;
+  onViewChange: (view: 'dashboard' | 'deploy' | 'servers' | 'dns' | 'logs' | 'pmta-config' | 'admin') => void;
 }
 
 const navItems = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { id: 'deploy', label: 'New Deployment', icon: Rocket },
+  { id: 'servers', label: 'Installed Servers', icon: Server },
   { id: 'dns', label: 'DNS Manager', icon: Globe },
   { id: 'pmta-config', label: 'PMTA Config', icon: Settings },
 ];

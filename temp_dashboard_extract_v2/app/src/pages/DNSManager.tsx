@@ -96,57 +96,41 @@ export function DNSManager() {
                   <CardTitle className="text-white">Required Records</CardTitle>
                   <CardDescription>Add these records to your domain's DNS settings at your registrar.</CardDescription>
                 </CardHeader>
-                <CardContent className="space-y-6">
-                  {/* SPF */}
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <label className="text-sm font-medium text-slate-300">SPF Record (TXT)</label>
-                      <Badge variant="outline" className="border-green-500/30 text-green-500">Essential</Badge>
-                    </div>
-                    <div className="flex gap-2">
-                      <div className="w-24 bg-slate-900/50 flex items-center justify-center border border-slate-700 rounded text-slate-400 text-sm">@</div>
-                      <code className="flex-1 bg-slate-950 p-3 rounded border border-slate-800 text-slate-300 text-sm font-mono overflow-x-auto">
-                        {data.spf}
-                      </code>
-                      <Button variant="ghost" size="icon" onClick={() => copyToClipboard(data.spf, 'spf')}>
-                        {copiedField === 'spf' ? <CheckCircle className="w-4 h-4 text-green-500" /> : <Copy className="w-4 h-4" />}
-                      </Button>
-                    </div>
-                  </div>
+                <CardContent className="space-y-4">
 
-                  {/* DKIM */}
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <label className="text-sm font-medium text-slate-300">DKIM Record (TXT)</label>
-                      <Badge variant="outline" className="border-green-500/30 text-green-500">Essential</Badge>
-                    </div>
-                    <div className="flex gap-2">
-                      <div className="w-24 bg-slate-900/50 flex items-center justify-center border border-slate-700 rounded text-slate-400 text-sm">default._domainkey</div>
-                      <code className="flex-1 bg-slate-950 p-3 rounded border border-slate-800 text-slate-300 text-sm font-mono break-all max-h-32 overflow-y-auto">
-                        {data.dkim}
-                      </code>
-                      <Button variant="ghost" size="icon" onClick={() => copyToClipboard(data.dkim, 'dkim')}>
-                        {copiedField === 'dkim' ? <CheckCircle className="w-4 h-4 text-green-500" /> : <Copy className="w-4 h-4" />}
-                      </Button>
-                    </div>
-                  </div>
+                  {data.formatted_records?.map((record: any, idx: number) => (
+                    <div key={idx} className="space-y-2 pb-4 border-b border-slate-800/50 last:border-0 last:pb-0">
+                      <div className="flex items-center justify-between">
+                        <label className="text-sm font-medium text-slate-300">
+                          {record.type === 'TXT' && record.host.includes('_domainkey') ? 'DKIM Record' :
+                            record.type === 'TXT' && record.host.includes('_dmarc') ? 'DMARC Record' :
+                              record.type === 'TXT' ? 'SPF Record' : 'A Record'} ({record.type})
+                        </label>
+                        <Badge variant="outline" className={record.type === 'A' || record.host.includes('domainkey') || record.value?.includes('spf1') ? "border-green-500/30 text-green-500 bg-green-500/10" : "border-blue-500/30 text-blue-500 bg-blue-500/10"}>
+                          {record.type === 'A' || record.host.includes('domainkey') || record.value?.includes('spf1') ? 'Essential' : 'Recommended'}
+                        </Badge>
+                      </div>
 
-                  {/* DMARC */}
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <label className="text-sm font-medium text-slate-300">DMARC Record (TXT)</label>
-                      <Badge variant="outline" className="border-blue-500/30 text-blue-500">Recommended</Badge>
+                      <div className="flex flex-col sm:flex-row gap-2">
+                        <div className="sm:w-36 px-3 bg-slate-900/50 flex items-center border border-slate-700 rounded text-slate-400 text-sm overflow-hidden text-ellipsis whitespace-nowrap" title={record.host}>
+                          {record.host}
+                        </div>
+                        <code className="flex-1 bg-slate-950 p-3 rounded border border-slate-800 text-slate-300 text-sm font-mono break-all max-h-32 overflow-y-auto min-h-[44px] flex items-center">
+                          {record.value}
+                        </code>
+                        <Button variant="ghost" size="icon" className="shrink-0 h-11 w-11" onClick={() => copyToClipboard(record.value, `rec-${idx}`)}>
+                          {copiedField === `rec-${idx}` ? <CheckCircle className="w-4 h-4 text-green-500" /> : <Copy className="w-4 h-4" />}
+                        </Button>
+                      </div>
                     </div>
-                    <div className="flex gap-2">
-                      <div className="w-24 bg-slate-900/50 flex items-center justify-center border border-slate-700 rounded text-slate-400 text-sm">_dmarc</div>
-                      <code className="flex-1 bg-slate-950 p-3 rounded border border-slate-800 text-slate-300 text-sm font-mono overflow-x-auto">
-                        {data.dmarc}
-                      </code>
-                      <Button variant="ghost" size="icon" onClick={() => copyToClipboard(data.dmarc, 'dmarc')}>
-                        {copiedField === 'dmarc' ? <CheckCircle className="w-4 h-4 text-green-500" /> : <Copy className="w-4 h-4" />}
-                      </Button>
+                  ))}
+
+                  {(!data.formatted_records || data.formatted_records.length === 0) && (
+                    <div className="text-center p-6 text-slate-400">
+                      No formatted records returned from the server.
                     </div>
-                  </div>
+                  )}
+
                 </CardContent>
               </Card>
             </TabsContent>
