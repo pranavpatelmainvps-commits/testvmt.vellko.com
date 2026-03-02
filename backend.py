@@ -3119,14 +3119,6 @@ def get_inbound_emails():
         "current_page": page
     })
 
-@app.route("/forgot-password")
-def forgot_password_page():
-    return send_from_directory('templates', 'forgot_password.html')
-
-@app.route("/reset-password")
-def reset_password_page():
-    return send_from_directory('templates', 'reset_password.html')
-
 if __name__ == "__main__":
 
     print("----------------------------------------------------------------")
