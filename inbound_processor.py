@@ -73,13 +73,13 @@ def extract_body(msg):
             if ctype == "text/plain" and "attachment" not in cdispo:
                 try:
                     body = part.get_content()
-                except:
+                except Exception:
                     pass
                 break # Prefer first text/plain
     else:
         try:
             body = msg.get_content()
-        except:
+        except Exception:
              # Fallback
              body = str(msg.get_payload())
     return body

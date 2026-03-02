@@ -120,7 +120,7 @@ def add_mailbox(domain, password, users_file, valias_file, vdomains_file):
         valias_modified = True
     
     if users_modified or valias_modified:
-        log(f"\nSUCCESS: Configuration files updated.")
+        log("\nSUCCESS: Configuration files updated.")
     else:
         log("No changes were necessary (configuration already matches).")
 

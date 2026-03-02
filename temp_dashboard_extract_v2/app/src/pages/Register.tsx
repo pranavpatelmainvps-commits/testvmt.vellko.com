@@ -16,11 +16,33 @@ export function Register({ onSwitchToLogin }: RegisterProps) {
     const [success, setSuccess] = useState('');
     const [isLoading, setIsLoading] = useState(false);
 
+    const validateEmail = (email: string) => {
+        const re = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        return re.test(email);
+    };
+
+    const validatePassword = (password: string) => {
+        // Minimum 8 characters, at least one letter and one number
+        const re = /^(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d@$!%*#?&]{8,}$/;
+        return re.test(password);
+    };
+
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
-        setIsLoading(true);
         setError('');
         setSuccess('');
+
+        if (!validateEmail(email)) {
+            setError('Please enter a valid email address (e.g., user@example.com)');
+            return;
+        }
+
+        if (!validatePassword(password)) {
+            setError('Password must be at least 8 characters long and contain at least one letter and one number');
+            return;
+        }
+
+        setIsLoading(true);
 
         try {
             await fetchApi('/api/auth/register', {

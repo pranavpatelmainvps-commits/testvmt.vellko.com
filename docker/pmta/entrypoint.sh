@@ -7,6 +7,12 @@ echo "Starting SSH..."
 
 # Start PMTA if installed
 if [ -f /usr/sbin/pmtad ]; then
+    echo "Configuring PMTA Hostname..."
+    mkdir -p /etc/pmta/
+    if ! grep -q "host-name " /etc/pmta/config 2>/dev/null; then
+        echo "host-name testvmt.vellko.com" >> /etc/pmta/config
+    fi
+
     echo "Starting PowerMTA..."
     /usr/sbin/pmtad
     

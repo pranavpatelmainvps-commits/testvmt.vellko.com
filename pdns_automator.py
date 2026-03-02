@@ -41,7 +41,8 @@ def ensure_zone(domain, headers):
             "nameservers": [f"ns1.{domain}", f"ns2.{domain}"]
         }
         requests.post(f"{BASE_URL}/zones", headers=headers, json=payload)
-    except:
+    except Exception as e:
+        print(f"Failed to ensure zone: {e}")
         sys.exit(1)
 
 def create_records(domain, ips, hostname, selector, dkim_key, dmarc_email, headers, client_only=False, inbound_ip=None):
