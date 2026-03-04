@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   Rocket, Plus, Trash2, Server, User, Lock, CheckCircle,
-  FileText, List, ArrowLeft, Wifi, WifiOff, RefreshCw, Globe, Zap, Hash
+  FileText, List, ArrowLeft, Wifi, WifiOff, RefreshCw, Globe, Zap, Hash,
+  Loader2, CheckCircle2, Circle, XCircle
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -9,7 +10,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
-import { useInstall, useLogStream } from '@/hooks/useApi';
+import { useInstall, useLogStream, useInstallProgress } from '@/hooks/useApi';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 import { fetchApi } from '@/lib/api';
@@ -59,6 +60,7 @@ export function Deployment() {
 
   const { install, isLoading: isInstalling } = useInstall();
   const { logs, isConnected, clearLogs } = useLogStream(showLogs);
+  const { data: progressData } = useInstallProgress(showLogs);
 
   // ---- Fetch Servers ----
   const fetchServers = useCallback(async () => {
@@ -174,6 +176,7 @@ export function Deployment() {
     }
 
     try {
+      clearLogs();
       setShowLogs(true);
       await install({
         server_ip: selectedServer.host_ip,
@@ -184,6 +187,7 @@ export function Deployment() {
       });
       toast.success('Deployment started!');
     } catch (err) {
+      setShowLogs(false);
       toast.error('Deploy failed: ' + (err instanceof Error ? err.message : 'Unknown'));
     }
   };
@@ -224,6 +228,8 @@ export function Deployment() {
             onClick={() => {
               setNewIp(''); setNewUser('root'); setNewPass(''); setNewPort('22');
               setTestResult(null);
+              setShowLogs(false);
+              clearLogs();
               setView('add-server');
             }}
             className="bg-blue-600 hover:bg-blue-700"
@@ -251,6 +257,8 @@ export function Deployment() {
                 onClick={() => {
                   setNewIp(''); setNewUser('root'); setNewPass(''); setNewPort('22');
                   setTestResult(null);
+                  setShowLogs(false);
+                  clearLogs();
                   setView('add-server');
                 }}
                 className="bg-blue-600 hover:bg-blue-700"
@@ -319,7 +327,16 @@ export function Deployment() {
       <div className="p-6 space-y-6">
         {/* Header */}
         <div className="flex items-center gap-4">
-          <Button variant="ghost" size="sm" onClick={() => setView('server-list')} className="text-muted-foreground">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setView('server-list');
+              setShowLogs(false);
+              clearLogs();
+            }}
+            className="text-muted-foreground"
+          >
             <ArrowLeft className="w-4 h-4 mr-1" /> Back
           </Button>
           <div>
@@ -632,6 +649,61 @@ export function Deployment() {
           )}
         </Button>
       </div>
+
+      {/* Progress Stepper */}
+      {showLogs && progressData && progressData.progress_steps && progressData.progress_steps.length > 0 && (
+        <Card className="glass-card mb-6">
+          <CardHeader>
+            <CardTitle className="text-lg font-semibold text-white flex items-center justify-between">
+              <span className="flex items-center gap-2">
+                <Loader2 className={cn("w-5 h-5 text-blue-500", progressData.status !== 'completed' && progressData.status !== 'error' ? "animate-spin" : "")} />
+                Installation Progress
+              </span>
+              <Badge variant="outline" className={cn(
+                progressData.status === 'completed' ? "bg-green-500/10 text-green-500 border-green-500/20" :
+                  progressData.status === 'error' ? "bg-red-500/10 text-red-500 border-red-500/20" :
+                    "bg-blue-500/10 text-blue-500 border-blue-500/20"
+              )}>
+                {progressData.status === 'completed' ? 'Done' : progressData.status === 'error' ? 'Failed' : 'In Progress'}
+              </Badge>
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-4">
+              {progressData.progress_steps.map((step) => (
+                <div key={step.id} className="flex items-start gap-4">
+                  <div className="mt-1 flex-shrink-0">
+                    {step.status === 'completed' ? (
+                      <CheckCircle2 className="w-5 h-5 text-green-500" />
+                    ) : step.status === 'in_progress' ? (
+                      <Loader2 className="w-5 h-5 text-blue-500 animate-spin" />
+                    ) : step.status === 'error' ? (
+                      <XCircle className="w-5 h-5 text-red-500" />
+                    ) : (
+                      <Circle className="w-5 h-5 text-slate-600" />
+                    )}
+                  </div>
+                  <div className="flex-1">
+                    <p className={cn(
+                      "text-sm font-medium",
+                      step.status === 'completed' ? "text-slate-300" :
+                        step.status === 'in_progress' ? "text-blue-400 font-semibold" :
+                          step.status === 'error' ? "text-red-400" : "text-slate-500"
+                    )}>
+                      {step.name}
+                    </p>
+                    {step.status === 'in_progress' && progressData.message && (
+                      <p className="text-xs text-muted-foreground mt-1 bg-slate-900/50 p-2 rounded-md border border-slate-800 animate-pulse">
+                        {progressData.message}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Live Console */}
       {showLogs && (

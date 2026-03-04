@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/context/AuthContext';
+import { motion } from 'framer-motion';
 
 interface SidebarProps {
   currentView: string;
@@ -53,13 +54,23 @@ export function Sidebar({ currentView, onViewChange }: SidebarProps) {
                 <button
                   onClick={() => onViewChange(item.id as any)}
                   className={cn(
-                    "w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all duration-200",
+                    "relative w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-colors duration-200 z-10",
                     isActive
-                      ? "bg-blue-600 text-white shadow-lg shadow-blue-900/20"
-                      : "text-slate-400 hover:bg-slate-800/50 hover:text-white"
+                      ? "text-white"
+                      : "text-slate-400 hover:text-white"
                   )}
                 >
-                  <Icon className="w-5 h-5" />
+                  {isActive && (
+                    <motion.div
+                      layoutId="activeTab"
+                      className="absolute inset-0 bg-blue-600 rounded-lg shadow-lg shadow-blue-900/20 -z-10"
+                      initial={false}
+                      transition={{ type: "spring", bounce: 0.2, duration: 0.6 }}
+                    />
+                  )}
+                  <motion.div whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }} className="w-5 h-5 flex items-center justify-center">
+                    <Icon className="w-5 h-5" />
+                  </motion.div>
                   {item.label}
                 </button>
               </li>
@@ -72,13 +83,23 @@ export function Sidebar({ currentView, onViewChange }: SidebarProps) {
               <button
                 onClick={() => onViewChange('admin')}
                 className={cn(
-                  "w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all duration-200",
+                  "relative w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-colors duration-200 z-10",
                   currentView === 'admin'
-                    ? "bg-purple-600 text-white shadow-lg shadow-purple-900/20"
-                    : "text-slate-400 hover:bg-slate-800/50 hover:text-white"
+                    ? "text-white"
+                    : "text-slate-400 hover:text-white"
                 )}
               >
-                <Shield className="w-5 h-5" />
+                {currentView === 'admin' && (
+                  <motion.div
+                    layoutId="activeTab"
+                    className="absolute inset-0 bg-blue-600 rounded-lg shadow-lg shadow-blue-900/20 -z-10"
+                    initial={false}
+                    transition={{ type: "spring", bounce: 0.2, duration: 0.6 }}
+                  />
+                )}
+                <motion.div whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }} className="w-5 h-5 flex items-center justify-center">
+                  <Shield className="w-5 h-5" />
+                </motion.div>
                 Admin Panel
               </button>
             </li>

@@ -82,6 +82,22 @@ export interface InstallResponse {
   message: string;
 }
 
+export interface ProgressStep {
+  id: string;
+  name: string;
+  status: 'pending' | 'in_progress' | 'completed' | 'error';
+}
+
+export interface InstallProgress {
+  progress_steps: ProgressStep[];
+  status: string;
+  message: string;
+  current_step: string;
+  dns_records: any[];
+  deployed_domains: string[];
+  error?: string | null;
+}
+
 export interface LogsResponse {
   logs: string;
 }

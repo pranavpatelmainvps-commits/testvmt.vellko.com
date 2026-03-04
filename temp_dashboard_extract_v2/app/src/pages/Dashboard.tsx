@@ -12,6 +12,20 @@ import { useLogStream } from '@/hooks/useApi';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { motion, type Variants } from 'framer-motion';
+
+const containerVariants: Variants = {
+  hidden: { opacity: 0 },
+  show: {
+    opacity: 1,
+    transition: { staggerChildren: 0.1 }
+  }
+};
+
+const itemVariants: Variants = {
+  hidden: { opacity: 0, y: 20 },
+  show: { opacity: 1, y: 0, transition: { type: "spring", stiffness: 300, damping: 24 } }
+};
 
 
 // import { useMockDomainMappings, useMockInboundEmails } from '@/hooks/useApi'; // Removed
@@ -243,15 +257,20 @@ export function Dashboard() {
   }, []);
 
   return (
-    <div className="p-6 space-y-6">
+    <motion.div
+      className="p-6 space-y-6"
+      variants={containerVariants}
+      initial="hidden"
+      animate="show"
+    >
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <motion.div variants={itemVariants} className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-white">Dashboard</h1>
           <p className="text-sm text-muted-foreground">Monitor your VelkoMTA infrastructure</p>
         </div>
 
-      </div>
+      </motion.div>
 
 
 
@@ -259,54 +278,53 @@ export function Dashboard() {
 
       {/* Installation Progress / Status Card */}
       {(systemStatus.status === 'installing' || systemStatus.status === 'error' || systemStatus.status === 'started') && (
-        <InstallationStatusCard
-          status={systemStatus.status}
-          message={systemStatus.message}
-        />
+        <motion.div variants={itemVariants}>
+          <InstallationStatusCard
+            status={systemStatus.status}
+            message={systemStatus.message}
+          />
+        </motion.div>
       )}
 
       {/* Live Inbound Feed - Full Width now */}
-      <Card className="glass-card dashboard-card">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-white">
-            <Mail className="w-5 h-5 text-purple-500" />
-            Live Inbound Feed
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="space-y-1">
-            {inboundEmails.length > 0 ? (
-              inboundEmails.map((email, i) => (
-                <InboundEmailItem
-                  key={i}
-                  subject={email.subject}
-                  sender={email.sender}
-                  domain={email.domain || 'unknown'}
-                  messageType={email.messageType || 'reply'}
-                />
-              ))
-            ) : (
-              <div className="text-center py-8 text-slate-500">
-                <p>No inbound emails received yet.</p>
-              </div>
-            )}
-          </div>
-        </CardContent>
-      </Card>
-
-
-
-
+      <motion.div variants={itemVariants}>
+        <Card className="glass-card dashboard-card">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-white">
+              <Mail className="w-5 h-5 text-purple-500" />
+              Live Inbound Feed
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-1">
+              {inboundEmails.length > 0 ? (
+                inboundEmails.map((email, i) => (
+                  <InboundEmailItem
+                    key={i}
+                    subject={email.subject}
+                    sender={email.sender}
+                    domain={email.domain || 'unknown'}
+                    messageType={email.messageType || 'reply'}
+                  />
+                ))
+              ) : (
+                <div className="text-center py-8 text-slate-500">
+                  <p>No inbound emails received yet.</p>
+                </div>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      </motion.div>
 
       {/* Quick Links */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <motion.div variants={itemVariants} className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <QuickLinkCard
           title="Roundcube Webmail"
           icon={Mail}
-          href={`http://${window.location.hostname}:80`}
+          href={`http://${window.location.hostname}:8081`}
         />
-
-      </div>
-    </div>
+      </motion.div>
+    </motion.div>
   );
 }

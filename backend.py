@@ -752,6 +752,11 @@ def install_pmta():
     except Exception as e:
         print(f"Error creating/updating DB record: {e}")
 
+    # [FIX] Clear log file synchronously BEFORE background task starts
+    log_file_path = get_log_file(user_id)
+    with open(log_file_path, "w", encoding="utf-8") as f:
+        f.write("[INIT] Preparing deployment...\n")
+
     # NEW: Celery job enqueue with fallback
     try:
         from tasks import run_install_task
@@ -1401,8 +1406,7 @@ def get_dns_info_api():
     dmarc_record = f"v=DMARC1; p=none; rua=mailto:postmaster@{domain}"
     
     # NS Records (assuming local PowerDNS or simply pointing to this server)
-    # pdns_ip = "192.119.169.12"
-    pdns_ip = server_ip # Defaulting to the server IP for custom nameservers if they self-host DNS
+    pdns_ip = os.environ.get("PDNS_HOST", server_ip) # Use configured PDNS server IP, fallback to server_ip if missing
     
     ns_records = [
         {"host": f"ns1.{domain}", "value": pdns_ip, "type": "A"},
@@ -1831,10 +1835,12 @@ def run_install(data, user_id):
         f.write("")
 
     def log(msg):
+        from datetime import datetime
         try:
+            timestamp_msg = f"[{datetime.now().strftime('%H:%M:%S')}] {msg}"
             with open(log_file, "a", encoding="utf-8") as f:
-                f.write(msg + "\n")
-            print(msg) 
+                f.write(timestamp_msg + "\n")
+            print(timestamp_msg) 
         except Exception as e:
             print(f"FAILED TO WRITE LOG: {e}")
 
@@ -1859,9 +1865,13 @@ def run_install(data, user_id):
             status: Status of the step (pending, running, success, error)
             message: Optional message to display
         """
+        mapped_status = status
+        if status == "running": mapped_status = "in_progress"
+        elif status == "success": mapped_status = "completed"
+
         for step in progress_steps:
             if step["id"] == step_id:
-                step["status"] = status
+                step["status"] = mapped_status
                 break
         
         save_install_status({
@@ -2042,7 +2052,9 @@ def run_install(data, user_id):
             log(f"--- Upload {local_path} Success ---")
             return True
         except Exception as e:
-            log(f"!!! Upload Failed: {e}")
+            import traceback
+            err_details = traceback.format_exc()
+            log(f"!!! Upload Failed: {e}\n{err_details}")
             if client: client.close()
             return False
 
@@ -2649,7 +2661,7 @@ def run_install(data, user_id):
                 "ssh_port": ssh_port,
                 "smtp_user": input_user['username'],
                 "smtp_pass": input_user['password'],
-                "roundcube_url": f"http://{INBOUND_MAIL_SERVER_IP}", # Port 80 is default
+                "roundcube_url": f"http://{INBOUND_MAIL_SERVER_IP}:8000", # Port 8000 is default on inbound servers
                 "installed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "mappings": mappings,
                 "ptr_results": ptr_failures

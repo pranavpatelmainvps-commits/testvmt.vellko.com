@@ -5,7 +5,8 @@ import type {
   LogsResponse,
   EmailsResponse,
   DNSZone,
-  InboundEmail
+  InboundEmail,
+  InstallProgress
 } from '@/types';
 
 import { fetchApi } from '@/lib/api';
@@ -85,6 +86,40 @@ export function useLogStream(enabled: boolean = false) {
   }, []);
 
   return { logs, isConnected, clearLogs };
+}
+
+// Hook for installation progress (structured steps)
+export function useInstallProgress(enabled: boolean = false) {
+  const [data, setData] = useState<InstallProgress | null>(null);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    if (!enabled) {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+      return;
+    }
+
+    const pollProgress = async () => {
+      try {
+        const result = await fetchApi<InstallProgress>('/api/install/progress');
+        setData(result);
+      } catch (err) {
+        console.error('Failed to fetch install progress:', err);
+      }
+    };
+
+    pollProgress();
+    intervalRef.current = setInterval(pollProgress, 2000);
+
+    return () => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+    };
+  }, [enabled]);
+
+  return { data };
 }
 
 // Hook for inbound emails

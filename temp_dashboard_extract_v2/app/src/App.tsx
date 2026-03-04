@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 import { Sidebar } from '@/components/Sidebar';
 import { Dashboard } from '@/pages/Dashboard';
 import { Deployment } from '@/pages/Deployment';
@@ -41,8 +42,19 @@ function AuthenticatedApp() {
   return (
     <div className="flex h-screen bg-[hsl(222,47%,6%)] text-foreground overflow-hidden">
       <Sidebar currentView={currentView} onViewChange={setCurrentView} />
-      <main className="flex-1 overflow-y-auto">
-        {renderView()}
+      <main className="flex-1 overflow-y-auto overflow-x-hidden relative">
+        <AnimatePresence mode="wait">
+          <motion.div
+            key={currentView}
+            initial={{ opacity: 0, y: 15 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.98 }}
+            transition={{ duration: 0.25, ease: "easeOut" }}
+            className="min-h-full"
+          >
+            {renderView()}
+          </motion.div>
+        </AnimatePresence>
       </main>
       <Toaster />
     </div>
