@@ -702,6 +702,11 @@ def install_pmta():
     except Exception as e:
         print(f"Error creating initial DB record: {e}")
 
+    # [FIX] Clear log file synchronously BEFORE background task starts
+    log_file_path = get_log_file(user_id)
+    with open(log_file_path, "w", encoding="utf-8") as f:
+        f.write("[INIT] Preparing deployment...\n")
+
     # NEW: Celery job enqueue with fallback
     try:
         from tasks import run_install_task
@@ -2563,7 +2568,7 @@ def run_install(data, user_id):
                 "ssh_port": ssh_port,
                 "smtp_user": input_user['username'],
                 "smtp_pass": input_user['password'],
-                "roundcube_url": f"http://{INBOUND_MAIL_SERVER_IP}", # Port 80 is default
+                "roundcube_url": f"http://{INBOUND_MAIL_SERVER_IP}:8000", # Port 8000 is default on inbound servers
                 "installed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "mappings": mappings,
                 "ptr_results": ptr_failures

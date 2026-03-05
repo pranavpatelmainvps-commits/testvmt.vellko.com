@@ -87,24 +87,12 @@ domain-macro yahoo aol.com, yahoo.com, aol.nl, yahoo.nl, aol.com, yahoo.co.uk, y
 # ==========================================================
 
 <virtual-mta vmta1>
-    smtp-source-host 192.119.169.5 mail.quicklendings.com
-    domain-key default,quicklendings.com,/etc/pmta/dkim/quicklendings.com/default.private
-</virtual-mta>
-
-<virtual-mta vmta2>
-    smtp-source-host 192.119.169.123 mail.tommorrow-loan.com
-    domain-key default,tommorrow-loan.com,/etc/pmta/dkim/tommorrow-loan.com/default.private
-</virtual-mta>
-
-<virtual-mta vmta3>
-    smtp-source-host 192.119.169.124 mail.tommorrow-loan.com
-    domain-key default,tommorrow-loan.com,/etc/pmta/dkim/tommorrow-loan.com/default.private
+    smtp-source-host 192.119.169.123-192.119.169.124 mail.quickey.com
+    domain-key default,quickey.com,/etc/pmta/dkim/quickey.com/default.private
 </virtual-mta>
 
 <virtual-mta-pool pool1>
     virtual-mta vmta1
-    virtual-mta vmta2
-    virtual-mta vmta3
 </virtual-mta-pool>
 
 <source pool1>

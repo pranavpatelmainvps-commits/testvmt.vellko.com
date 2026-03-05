@@ -61,9 +61,15 @@ export function useLogStream(enabled: boolean = false) {
     const pollLogs = async () => {
       try {
         const result = await fetchApi<LogsResponse>('/install_logs');
-        if (result.logs && result.logs.length > lastLengthRef.current) {
-          setLogs(result.logs);
-          lastLengthRef.current = result.logs.length;
+        if (result.logs) {
+          // If new content is shorter, the log file was cleared (new deployment started)
+          if (result.logs.length < lastLengthRef.current) {
+            lastLengthRef.current = 0;
+          }
+          if (result.logs.length !== lastLengthRef.current) {
+            setLogs(result.logs);
+            lastLengthRef.current = result.logs.length;
+          }
         }
       } catch (err) {
         console.error('Failed to fetch logs:', err);
@@ -104,7 +110,7 @@ export function useInstallProgress(enabled: boolean = false) {
 
     const pollProgress = async () => {
       try {
-        const result = await fetchApi<InstallProgress>('/api/install/progress');
+        const result = await fetchApi<InstallProgress>(`/api/install/progress?t=${Date.now()}`);
         setData(result);
       } catch (err) {
         console.error('Failed to fetch install progress:', err);

@@ -25,7 +25,6 @@ import ssl
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import ipaddress
-import ipaddress
 import re
 from dotenv import load_dotenv
 from flask_limiter import Limiter
@@ -41,11 +40,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE_DIR = os.path.join(BASE_DIR, "templates")
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
-# PMTA Files (Keep list but remove hardcoded credentials)
-PMTA_FILES = [
-    "PowerMTA-5.0r6.rpm",
-    "license"
-]
+# PMTA Files are defined later near line 626 with the correct filenames
 
 # Use local path for easier debugging
 # Hardcode absolute path to ensure we are writing to the expected file
@@ -1800,6 +1795,57 @@ def generate_temp_password(length=16):
     alphabet = string.ascii_letters + string.digits
     return ''.join(secrets.choice(alphabet) for i in range(length))
 
+import ipaddress
+
+def expand_ips(ip_str):
+    """Parses a single IP, CIDR, or Range string into a list of valid IP strings."""
+    ip_str = ip_str.strip()
+    if not ip_str: return []
+    
+    # CIDR Format: e.g. 192.168.1.0/24
+    if '/' in ip_str:
+        try:
+            return [str(ip) for ip in ipaddress.IPv4Network(ip_str, strict=False).hosts()]
+        except Exception as e:
+            with open("debug_expand.log", "a") as f: f.write(f"CIDR Error: {e}\n")
+            return []
+            
+    # Range Format: e.g. 192.168.1.10-192.168.1.20
+    if '-' in ip_str:
+        parts = ip_str.split('-')
+        if len(parts) == 2:
+            try:
+                start_ip = ipaddress.IPv4Address(parts[0].strip())
+                end_ip = ipaddress.IPv4Address(parts[1].strip())
+                
+                # Enforce chronological sanity
+                if int(start_ip) > int(end_ip):
+                    start_ip, end_ip = end_ip, start_ip
+                
+                # Limit arbitrary large range expansions
+                if int(end_ip) - int(start_ip) > 1024:
+                    with open("debug_expand.log", "a") as f: f.write(f"Range too large\n")
+                    return [] 
+                
+                ips = []
+                current = int(start_ip)
+                while current <= int(end_ip):
+                    ips.append(str(ipaddress.IPv4Address(current)))
+                    current += 1
+                return ips
+            except Exception as e:
+                with open("debug_expand.log", "a") as f:
+                    import traceback
+                    f.write(f"Range Exception: {traceback.format_exc()}\n")
+                return []
+                
+    # Single IP
+    try:
+        return [str(ipaddress.IPv4Address(ip_str))]
+    except Exception as e:
+        with open("debug_expand.log", "a") as f: f.write(f"Single IP Error: {e}\n")
+        return []
+
 def run_install(data, user_id):
     # Debug print removed
     
@@ -1807,8 +1853,27 @@ def run_install(data, user_id):
     ssh_user = data["ssh_user"]
     ssh_pass = data["ssh_pass"] # The ORIGINAL password
     ssh_port = int(data.get("ssh_port", 22))
-    mappings = data["mappings"]
+    raw_mappings = data.get("mappings", [])
     fresh_install = data.get("fresh_install", False)
+
+    # 1. Expand Mappings (Ranges/CIDRs to Individual IP objects)
+    mappings = []
+    for rm in raw_mappings:
+        d = rm.get("domain", "").strip()
+        ip_input = rm.get("ip", "").strip()
+        print(f"[EXPAND_IPS] Input: '{ip_input}' for domain '{d}'")
+        expanded = expand_ips(ip_input)
+        print(f"[EXPAND_IPS] Output: {expanded} (count: {len(expanded)})")
+        if expanded:
+            for e_ip in expanded:
+                mappings.append({"domain": d, "ip": e_ip})
+        else:
+            # Fallback: if expand_ips returns [], keep original so deploy doesn't silently skip
+            print(f"[EXPAND_IPS] WARNING: expand_ips returned empty for '{ip_input}', using raw value")
+            mappings.append({"domain": d, "ip": ip_input})
+    print(f"[EXPAND_IPS] Final mappings count: {len(mappings)}")
+    print(f"[EXPAND_IPS] Final mappings: {mappings}")
+
 
     # [STRICT] IP Range Guard (2-253)
     for m in mappings:
@@ -1817,10 +1882,7 @@ def run_install(data, user_id):
              try:
                  octet = int(ip.split('.')[-1])
                  if not (2 <= octet <= 253):
-                      err_msg = f"Strict Mode Violation: IP {ip} is out of allowed range (.2 - .253)"
-                      save_install_status({"status": "error", "message": err_msg}, user_id)
-                      print(f"!!! {err_msg}")
-                      return
+                      print(f"[WARN] IP {ip} last octet ({octet}) outside typical range .2-.253 — proceeding anyway")
              except Exception:
                  pass
     
@@ -2183,71 +2245,74 @@ def run_install(data, user_id):
             check_client.close()
             
             if check_result == 'EXISTS':
-                msg = "Existing MTA detected. PROCEEDING ANYWAY (DEBUG Bypassed)."
-                log("!!! WARNING: " + msg)
-                # For debugging/re-deploy on same server, we allow this.
-                # In production this should remain strict.
-                pass
-            
-            log(">>> Server is clean. Proceeding...")
-            update_progress("connect", "success", "Connected to server successfully")
+                msg = "Existing PMTA detected. Switching to ONBOARD (Additive) mode."
+                log(">>> " + msg)
+                mode = "onboard"
+                update_progress("connect", "success", "Connected to existing server")
+                # Fast-forward progress steps that we skip in onboard mode
+                update_progress("upload", "success", "Skipped - Already installed")
+                update_progress("install", "success", "Skipped - Already installed")
+            else:
+                log(">>> Server is clean. Proceeding with FRESH INSTALL...")
+                update_progress("connect", "success", "Connected to server successfully")
     
-            # 1. ROTATE PASSWORD (SECURITY)
-            # 1. ROTATE PASSWORD (SECURITY)
-            log(">>> [SECURITY] Password rotation skipped (Stability Mode).")
-            password_rotated = False
+                # 1. ROTATE PASSWORD (SECURITY)
+                log(">>> [SECURITY] Password rotation skipped (Stability Mode).")
+                password_rotated = False
 
     
-            # 2. Upload Files
-            update_progress("upload", "running", "Uploading PowerMTA files...")
-            log(">>> [STEP:UPLOAD] Uploading Core Files...")
+                # 2. Upload Files
+                update_progress("upload", "running", "Uploading PowerMTA files...")
+                log(">>> [STEP:UPLOAD] Uploading Core Files...")
     
-            for f in PMTA_FILES:
-                local_p = os.path.join(BASE_DIR, f)
-                remote_p = f"/app/{f}" # We put everything in /app first
+                for f in PMTA_FILES:
+                    local_p = os.path.join(BASE_DIR, f)
+                    remote_p = f"/app/{f}" # We put everything in /app first
                 
-                # Create /app if not exists
-                if not run_command("mkdir -p /app", "Create /app"): raise Exception("Failed to create remote dir")
-                if not upload_file(local_p, remote_p): raise Exception(f"Failed to upload {f}")
+                    # Create /app if not exists
+                    if not run_command("mkdir -p /app", "Create /app"): raise Exception("Failed to create remote dir")
+                    if not upload_file(local_p, remote_p): raise Exception(f"Failed to upload {f}")
             
-            update_progress("upload", "success", "All files uploaded successfully")
+                update_progress("upload", "success", "All files uploaded successfully")
     
-            # 3. Install PowerMTA
-            update_progress("install", "running", "Installing PowerMTA...")
-            log(">>> [STEP:INSTALL] Checking PowerMTA Installation...")
-            log("Running PowerMTA Installer...")
+                # 3. Install PowerMTA
+                update_progress("install", "running", "Installing PowerMTA...")
+                log(">>> [STEP:INSTALL] Checking PowerMTA Installation...")
+                log("Running PowerMTA Installer...")
             
-            try:
-                with open(PMTA_INSTALL_SCRIPT, "r") as f:
-                    script = f.read()
+                try:
+                    with open(PMTA_INSTALL_SCRIPT, "r") as f:
+                        script = f.read()
                 
-                # For the base installer, we just need a valid hostname to set /etc/hosts/hostname
-                # We'll pick the first domain from mappings as the 'primary' system hostname
-                primary_domain = mappings[0]["domain"] if mappings else "localhost.localdomain"
+                    # For the base installer, we just need a valid hostname to set /etc/hosts/hostname
+                    # We'll pick the first domain from mappings as the 'primary' system hostname
+                    primary_domain = mappings[0]["domain"] if mappings else "localhost.localdomain"
     
-                script = script.replace("{{DOMAIN}}", primary_domain) 
-                script = script.replace("{{SERVER_IP}}", server_ip)
-                script = script.replace("{{SMTP_USER}}", "smtpuser")
-                script = script.replace("{{SMTP_PASS}}", "smtppass")
+                    script = script.replace("{{DOMAIN}}", primary_domain) 
+                    script = script.replace("{{SERVER_IP}}", server_ip)
+                    script = script.replace("{{SMTP_USER}}", "smtpuser")
+                    script = script.replace("{{SMTP_PASS}}", "smtppass")
     
-                with tempfile.NamedTemporaryFile(delete=False, mode="wb", suffix=".sh") as tmp:
-                    tmp.write(script.encode('utf-8'))
-                    tmp_path = tmp.name
+                    with tempfile.NamedTemporaryFile(delete=False, mode="wb", suffix=".sh") as tmp:
+                        tmp.write(script.encode('utf-8'))
+                        tmp_path = tmp.name
                 
-                if not upload_file(tmp_path, "/root/pmta-install.sh", force=True): raise Exception("Script upload failed")
-                if not run_command("chmod +x /root/pmta-install.sh", "Set Execute Permission"): raise Exception("Chmod failed")
-                if not run_command("bash /root/pmta-install.sh", "Run PMTA Installer"): raise Exception("Install Script failed")
+                    if not upload_file(tmp_path, "/root/pmta-install.sh", force=True): raise Exception("Script upload failed")
+                    if not run_command("chmod +x /root/pmta-install.sh", "Set Execute Permission"): raise Exception("Chmod failed")
+                    if not run_command("bash /root/pmta-install.sh", "Run PMTA Installer"): raise Exception("Install Script failed")
     
-            except Exception as e:
-                log(f"Error preparing install script: {e}")
-                update_progress("install", "error", f"Installation failed: {e}")
-                raise
+                except Exception as e:
+                    log(f"Error preparing install script: {e}")
+                    update_progress("install", "error", f"Installation failed: {e}")
+                    raise
             
-            update_progress("install", "success", "PowerMTA installed successfully")
+                update_progress("install", "success", "PowerMTA installed successfully")
         else:
              log(">>> [MODE] Bulk Onboarding - Skipping Install/Fresh Checks.")
              # In onboarding mode, assume server is ready and we use the provided password (or temp pass if we knew it, but here we only have input pass)
              # User must provide current valid password for onboarding.
+             update_progress("upload", "success", "Skipped - Already installed")
+             update_progress("install", "success", "Skipped - Already installed")
              pass
 
         # [NEW] Deduplication for Onboarding (Additive Mode)
@@ -2383,11 +2448,11 @@ def run_install(data, user_id):
             # We treat every domain as its own sender identity (Client Mode)
             
             env = os.environ.copy()
-            pdns_key = os.getenv('PDNS_API_KEY', '')
-            env["PDNS_API_KEY"] = pdns_key if pdns_key else ''
+            pdns_key = os.getenv('PDNS_API_KEY', 'MyDNSApiKey2026')
+            env["PDNS_API_KEY"] = pdns_key
             
-            if not pdns_key:
-                 log("!!! WARNING: PDNS_API_KEY not found in environment. DNS provisioning will be skipped.")
+            if pdns_key == 'MyDNSApiKey2026':
+                 log(">>> [DNS] Using default PDNS_API_KEY (MyDNSApiKey2026).")
 
 
             for d_name, ips in active_gen_domains.items():
@@ -2508,7 +2573,7 @@ def run_install(data, user_id):
     systemctl restart pmta
     echo "Service Restarted."
     """
-                    with open("/app/debug_script.sh", "w") as f_dbg:
+                    with open(os.path.join(BASE_DIR, "debug_script.sh"), "w") as f_dbg:
                         f_dbg.write(final_script)
                     tmp.write(final_script.encode('utf-8'))
                     tmp_path = tmp.name

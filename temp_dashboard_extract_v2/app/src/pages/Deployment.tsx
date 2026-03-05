@@ -529,7 +529,7 @@ export function Deployment() {
               onClick={() => setBulkMode(false)}
               className={!bulkMode ? "bg-blue-600 text-white hover:bg-blue-700" : "text-slate-400 hover:text-white"}
             >
-              <List className="w-4 h-4 mr-1" /> Table
+              <List className="w-4 h-4 mr-1" /> Standard Install
             </Button>
             <Button
               variant={bulkMode ? "secondary" : "ghost"}
@@ -537,7 +537,7 @@ export function Deployment() {
               onClick={() => setBulkMode(true)}
               className={bulkMode ? "bg-blue-600 text-white hover:bg-blue-700" : "text-slate-400 hover:text-white"}
             >
-              <FileText className="w-4 h-4 mr-1" /> Bulk
+              <FileText className="w-4 h-4 mr-1" /> Bulk Onboard
             </Button>
           </div>
         </CardHeader>
@@ -618,9 +618,12 @@ export function Deployment() {
                   {bulkDomains.split('\n').filter(Boolean).length} Domains
                 </p>
               </div>
-              <div className="md:col-span-2">
+              <div className="md:col-span-2 space-y-3">
                 <p className="text-sm text-yellow-500/80 bg-yellow-500/10 p-3 rounded border border-yellow-500/20">
                   <strong>Note:</strong> IPs and Domains are paired 1-to-1 by line number. Ensure the order matches.
+                </p>
+                <p className="text-sm text-blue-400/80 bg-blue-500/10 p-3 rounded border border-blue-500/20">
+                  <strong>IP Format Tip:</strong> You can enter single IPs (<code>1.1.1.1</code>), IP ranges (<code>1.1.1.10-1.1.1.20</code>), or CIDR networks (<code>1.1.1.0/24</code>). The system will automatically map the single domain on the same line to all expanded IPs.
                 </p>
               </div>
             </div>
