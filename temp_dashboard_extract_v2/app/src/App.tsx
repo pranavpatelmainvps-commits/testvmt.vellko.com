@@ -8,12 +8,14 @@ import { PMTAConfig } from '@/pages/PMTAConfig';
 import { AdminPanel } from '@/pages/AdminPanel';
 import { InstalledServers } from '@/pages/InstalledServers';
 import { Toaster } from '@/components/ui/sonner';
+import { ProfilePage } from '@/pages/ProfilePage';
 
 import { AuthProvider, useAuth } from '@/context/AuthContext';
 import { Login } from '@/pages/Login';
 import { Register } from '@/pages/Register';
+import { LandingPage } from '@/pages/LandingPage';
 
-type View = 'dashboard' | 'deploy' | 'servers' | 'dns' | 'logs' | 'pmta-config' | 'admin';
+type View = 'dashboard' | 'deploy' | 'servers' | 'dns' | 'logs' | 'pmta-config' | 'admin' | 'profile';
 
 // Component for authenticated users (Main App)
 function AuthenticatedApp() {
@@ -34,6 +36,8 @@ function AuthenticatedApp() {
         return <PMTAConfig />;
       case 'admin':
         return <AdminPanel />;
+      case 'profile':
+        return <ProfilePage />;
       default:
         return <Dashboard />;
     }
@@ -71,13 +75,21 @@ function App() {
 
 function Root() {
   const { isAuthenticated } = useAuth();
-  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
+  const [authMode, setAuthMode] = useState<'landing' | 'login' | 'register'>('landing');
 
   if (!isAuthenticated) {
     if (authMode === 'register') {
       return <Register onSwitchToLogin={() => setAuthMode('login')} />;
     }
-    return <Login onSwitchToRegister={() => setAuthMode('register')} />;
+    if (authMode === 'login') {
+      return <Login onSwitchToRegister={() => setAuthMode('register')} />;
+    }
+    return (
+      <LandingPage
+        onGetStarted={() => setAuthMode('register')}
+        onLogin={() => setAuthMode('login')}
+      />
+    );
   }
 
   return <AuthenticatedApp />;

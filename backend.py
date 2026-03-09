@@ -1,4 +1,8 @@
 from flask import Flask, request, jsonify, send_from_directory, make_response
+import pyotp
+import qrcode
+import io
+import base64
 import paramiko
 import tempfile
 import os
@@ -113,6 +117,10 @@ class User(db.Model):
     verification_token = db.Column(db.String(100), nullable=True)
     reset_token = db.Column(db.String(100), nullable=True)
     reset_token_expiry = db.Column(db.DateTime, nullable=True)
+    
+    # 2FA TOTP
+    totp_secret = db.Column(db.String(32), nullable=True)
+    totp_enabled = db.Column(db.Boolean, default=False)
 
     def set_password(self, password):
         self.password_hash = bcrypt.generate_password_hash(password).decode('utf-8')
@@ -349,7 +357,6 @@ def register():
     return jsonify({"message": "User registered successfully. Please check your email to verify."}), 201
     
 @app.route("/api/auth/login", methods=["POST"])
-@limiter.limit("10 per minute")
 def login():
     data = request.json
     user = User.query.filter_by(email=data['email']).first()
@@ -357,6 +364,18 @@ def login():
     if user and user.check_password(data['password']):
         if not user.is_verified:
             return jsonify({"error": "Account not verified. Please check your email."}), 403
+
+        # Check if 2FA is enabled
+        if user.totp_enabled:
+            totp_code = data.get('totp_code', '')
+            if not totp_code:
+                # Tell frontend to show 2FA input
+                return jsonify({"requires_2fa": True, "email": user.email}), 200
+            
+            # Verify TOTP code
+            totp = pyotp.TOTP(user.totp_secret)
+            if not totp.verify(totp_code, valid_window=1):
+                return jsonify({"error": "Invalid 2FA code"}), 401
 
         token = create_access_token(identity=str(user.id), additional_claims={"role": user.role})
         return jsonify({
@@ -369,6 +388,88 @@ def login():
             }
         })
     return jsonify({"error": "Invalid credentials"}), 401
+
+# ---- 2FA TOTP Endpoints ----
+@app.route("/api/auth/2fa/setup", methods=["POST"])
+@jwt_required()
+def setup_2fa():
+    current_user_id = get_jwt_identity()
+    user = User.query.get(current_user_id)
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    
+    if user.totp_enabled:
+        return jsonify({"error": "2FA is already enabled"}), 400
+
+    # Generate secret
+    secret = pyotp.random_base32()
+    user.totp_secret = secret
+    db.session.commit()
+
+    # Generate QR code
+    totp = pyotp.TOTP(secret)
+    uri = totp.provisioning_uri(name=user.email, issuer_name="VelkoMTA Cloud")
+    
+    img = qrcode.make(uri)
+    buffer = io.BytesIO()
+    img.save(buffer, format='PNG')
+    buffer.seek(0)
+    qr_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
+
+    return jsonify({
+        "secret": secret,
+        "qr_code": f"data:image/png;base64,{qr_base64}"
+    })
+
+@app.route("/api/auth/2fa/verify", methods=["POST"])
+@jwt_required()
+def verify_2fa():
+    current_user_id = get_jwt_identity()
+    user = User.query.get(current_user_id)
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    
+    data = request.json
+    code = data.get('code', '')
+    
+    if not user.totp_secret:
+        return jsonify({"error": "2FA not set up. Call /api/auth/2fa/setup first."}), 400
+    
+    totp = pyotp.TOTP(user.totp_secret)
+    if totp.verify(code, valid_window=1):
+        user.totp_enabled = True
+        db.session.commit()
+        return jsonify({"message": "2FA enabled successfully"})
+    else:
+        return jsonify({"error": "Invalid code. Please try again."}), 400
+
+@app.route("/api/auth/2fa/disable", methods=["POST"])
+@jwt_required()
+def disable_2fa():
+    current_user_id = get_jwt_identity()
+    user = User.query.get(current_user_id)
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    
+    data = request.json
+    password = data.get('password', '')
+    
+    if not user.check_password(password):
+        return jsonify({"error": "Incorrect password"}), 401
+    
+    user.totp_enabled = False
+    user.totp_secret = None
+    db.session.commit()
+    return jsonify({"message": "2FA disabled successfully"})
+
+@app.route("/api/auth/2fa/status", methods=["GET"])
+@jwt_required()
+def status_2fa():
+    current_user_id = get_jwt_identity()
+    user = User.query.get(current_user_id)
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    return jsonify({"enabled": user.totp_enabled})
 
 @app.route("/api/auth/verify", methods=["GET", "POST"])
 def verify_email():
@@ -462,6 +563,31 @@ def me():
         "role": user.role
     })
 
+@app.route("/api/auth/change-password", methods=["POST"])
+@jwt_required()
+def change_password():
+    current_user_id = get_jwt_identity()
+    user = User.query.get(current_user_id)
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+
+    data = request.json
+    current_password = data.get('current_password', '')
+    new_password = data.get('new_password', '')
+
+    if not current_password or not new_password:
+        return jsonify({"error": "Both current and new password are required"}), 400
+
+    if not user.check_password(current_password):
+        return jsonify({"error": "Current password is incorrect"}), 401
+
+    if len(new_password) < 8:
+        return jsonify({"error": "New password must be at least 8 characters"}), 400
+
+    user.set_password(new_password)
+    db.session.commit()
+    return jsonify({"message": "Password changed successfully"})
+
 # --- Authenticated Endpoints Wrapper (Example) ---
 # To protect other routes, use @jwt_required()
 
@@ -501,6 +627,10 @@ def update_user(user_id):
     if 'email' in data:
         user.email = data['email']
     if 'role' in data:
+        if user.role == 'admin' and data['role'] != 'admin':
+            admin_count = User.query.filter_by(role="admin").count()
+            if admin_count <= 1:
+                return jsonify({"error": "Cannot demote the last admin account"}), 400
         user.role = data['role']
     if 'password' in data and data['password']:
         user.password_hash = bcrypt.generate_password_hash(data['password']).decode('utf-8')
@@ -523,6 +653,11 @@ def delete_user(user_id):
     if not user:
         return jsonify({"error": "User not found"}), 404
     
+    if user.role == "admin":
+        admin_count = User.query.filter_by(role="admin").count()
+        if admin_count <= 1:
+            return jsonify({"error": "Cannot delete the last admin account"}), 400
+
     db.session.delete(user)
     db.session.commit()
     return jsonify({"message": "User deleted successfully"})

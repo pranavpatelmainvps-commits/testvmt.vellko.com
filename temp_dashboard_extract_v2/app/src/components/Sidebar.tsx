@@ -16,7 +16,7 @@ import { motion } from 'framer-motion';
 
 interface SidebarProps {
   currentView: string;
-  onViewChange: (view: 'dashboard' | 'deploy' | 'servers' | 'dns' | 'logs' | 'pmta-config' | 'admin') => void;
+  onViewChange: (view: 'dashboard' | 'deploy' | 'servers' | 'dns' | 'logs' | 'pmta-config' | 'admin' | 'profile') => void;
 }
 
 const navItems = [
@@ -110,13 +110,13 @@ export function Sidebar({ currentView, onViewChange }: SidebarProps) {
       {/* User Profile */}
       <div className="p-4 border-t border-[hsl(217,33%,15%)]">
         <div className="flex items-center gap-3 px-2">
-          <div className="w-9 h-9 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center">
+          <button onClick={() => onViewChange('profile')} className="w-9 h-9 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center hover:scale-105 transition-transform" title="Profile Settings">
             <User className="w-4 h-4 text-white" />
-          </div>
-          <div className="flex-1 min-w-0">
+          </button>
+          <button onClick={() => onViewChange('profile')} className="flex-1 min-w-0 text-left hover:opacity-80 transition-opacity" title="Profile Settings">
             <p className="text-sm font-medium text-white truncate">{user?.name || 'User'}</p>
             <p className="text-xs text-muted-foreground truncate">{user?.email || 'user@example.com'}</p>
-          </div>
+          </button>
           <button onClick={logout} className="p-2 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-red-400 transition-colors" title="Sign Out">
             <LogOut className="w-4 h-4" />
           </button>

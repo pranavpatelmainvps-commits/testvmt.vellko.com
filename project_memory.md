@@ -11,7 +11,7 @@ This file contains persistent memory for the PowerMTA/VelkoMTA Dashboard project
 
 ### Dashboard Admin Account:
 - **Email:** `pranavpatel.mainvps@gmail.com` (Already Verified Admin)
-- **Password:** `Stoneheart@24`
+- **Password:** `Stoneheart@242`
 - *Note: Do not try to hack/bypass the sqlite database for this account. It is fully functional.*
 
 ### Default Test Server (For Deployments):
