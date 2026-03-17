@@ -15,6 +15,21 @@ import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 import { fetchApi } from '@/lib/api';
 
+const isIPv4 = (ip: string) => /^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/.test(ip);
+const isValidIPField = (input: string) => {
+  if (isIPv4(input)) return true;
+  if (input.includes('/')) {
+    const [ip, cidr] = input.split('/');
+    return isIPv4(ip) && /^\d+$/.test(cidr) && parseInt(cidr, 10) <= 32;
+  }
+  if (input.includes('-')) {
+    const [start, end] = input.split('-');
+    return isIPv4(start) && isIPv4(end);
+  }
+  return false;
+};
+const isValidDomain = (domain: string) => /^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/.test(domain);
+
 // ---- Types ----
 interface SavedServer {
   id: number;
@@ -151,11 +166,29 @@ export function Deployment() {
     setView('deploy');
   };
 
+  const isFormValid = () => {
+    if (bulkMode) {
+      const ips = bulkIPs.split('\n').map(s => s.trim()).filter(Boolean);
+      const domains = bulkDomains.split('\n').map(s => s.trim()).filter(Boolean);
+      if (ips.length === 0 || domains.length === 0) return false;
+      if (ips.length !== domains.length) return false;
+      return ips.every(ip => isValidIPField(ip)) && domains.every(d => isValidDomain(d));
+    } else {
+      const validRows = mappings.filter(m => m.domain || m.ip);
+      if (validRows.length === 0) return false;
+      return validRows.every(m => m.domain && m.ip && isValidDomain(m.domain) && isValidIPField(m.ip));
+    }
+  };
+
   // ---- Deploy ----
   const handleDeploy = async () => {
     if (!selectedServer) return;
     if (!deployPass) {
       toast.error('Enter the SSH password for this server');
+      return;
+    }
+    if (!isFormValid()) {
+      toast.error('Please fix validation errors before deploying');
       return;
     }
 
@@ -561,21 +594,27 @@ export function Deployment() {
                 <tbody>
                   {mappings.map((mapping) => (
                     <tr key={mapping.id} className="border-b border-border/50">
-                      <td className="py-3 px-4">
+                      <td className="py-3 px-4 align-top">
                         <Input
                           placeholder="example.com"
                           value={mapping.domain}
                           onChange={(e) => updateMapping(mapping.id, 'domain', e.target.value)}
-                          className="bg-slate-900 border-slate-700 text-white placeholder:text-slate-600"
+                          className={cn("bg-slate-900 border-slate-700 text-white placeholder:text-slate-600", mapping.domain && !isValidDomain(mapping.domain) && "border-red-500 bg-red-500/10")}
                         />
+                        {mapping.domain && !isValidDomain(mapping.domain) && (
+                          <p className="text-red-500 text-xs mt-1">Invalid domain format</p>
+                        )}
                       </td>
-                      <td className="py-3 px-4">
+                      <td className="py-3 px-4 align-top">
                         <Input
                           placeholder="1.2.3.4"
                           value={mapping.ip}
                           onChange={(e) => updateMapping(mapping.id, 'ip', e.target.value)}
-                          className="bg-slate-900 border-slate-700 text-white placeholder:text-slate-600"
+                          className={cn("bg-slate-900 border-slate-700 text-white placeholder:text-slate-600", mapping.ip && !isValidIPField(mapping.ip) && "border-red-500 bg-red-500/10")}
                         />
+                        {mapping.ip && !isValidIPField(mapping.ip) && (
+                          <p className="text-red-500 text-xs mt-1">Invalid IPv4 format</p>
+                        )}
                       </td>
                       <td className="py-3 px-4">
                         <Button
@@ -600,11 +639,15 @@ export function Deployment() {
                   value={bulkIPs}
                   onChange={(e) => setBulkIPs(e.target.value)}
                   placeholder={"1.2.3.4\n1.2.3.5\n..."}
-                  className="w-full h-48 p-3 bg-slate-900 border border-slate-700 rounded-md text-white font-mono text-sm placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className={cn(
+                    "w-full h-48 p-3 bg-slate-900 border border-slate-700 rounded-md text-white font-mono text-sm placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500",
+                    bulkIPs.split('\n').some(ip => ip.trim() && !isValidIPField(ip.trim())) && "border-red-500 bg-red-500/5 focus:ring-red-500"
+                  )}
                 />
-                <p className="text-xs text-slate-500">
-                  {bulkIPs.split('\n').filter(Boolean).length} IPs
-                </p>
+                <div className={cn("text-xs flex justify-between", bulkIPs.split('\n').some(ip => ip.trim() && !isValidIPField(ip.trim())) ? "text-red-500" : "text-slate-500")}>
+                  <span>{bulkIPs.split('\n').filter(Boolean).length} IPs</span>
+                  {bulkIPs.split('\n').some(ip => ip.trim() && !isValidIPField(ip.trim())) && <span>Invalid IP format detected</span>}
+                </div>
               </div>
               <div className="space-y-2">
                 <Label className="text-slate-300">Domains (One per line)</Label>
@@ -612,11 +655,15 @@ export function Deployment() {
                   value={bulkDomains}
                   onChange={(e) => setBulkDomains(e.target.value)}
                   placeholder={"example.com\nmail.test.com\n..."}
-                  className="w-full h-48 p-3 bg-slate-900 border border-slate-700 rounded-md text-white font-mono text-sm placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className={cn(
+                    "w-full h-48 p-3 bg-slate-900 border border-slate-700 rounded-md text-white font-mono text-sm placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500",
+                    bulkDomains.split('\n').some(d => d.trim() && !isValidDomain(d.trim())) && "border-red-500 bg-red-500/5 focus:ring-red-500"
+                  )}
                 />
-                <p className="text-xs text-slate-500">
-                  {bulkDomains.split('\n').filter(Boolean).length} Domains
-                </p>
+                <div className={cn("text-xs flex justify-between", bulkDomains.split('\n').some(d => d.trim() && !isValidDomain(d.trim())) ? "text-red-500" : "text-slate-500")}>
+                  <span>{bulkDomains.split('\n').filter(Boolean).length} Domains</span>
+                  {bulkDomains.split('\n').some(d => d.trim() && !isValidDomain(d.trim())) && <span>Invalid domain format detected</span>}
+                </div>
               </div>
               <div className="md:col-span-2 space-y-3">
                 <p className="text-sm text-yellow-500/80 bg-yellow-500/10 p-3 rounded border border-yellow-500/20">
@@ -636,8 +683,8 @@ export function Deployment() {
         <Button
           size="lg"
           onClick={handleDeploy}
-          disabled={isInstalling || !deployPass}
-          className="bg-blue-600 hover:bg-blue-700 px-8"
+          disabled={isInstalling || !deployPass || !isFormValid()}
+          className="bg-blue-600 hover:bg-blue-700 px-8 disabled:opacity-50"
         >
           {isInstalling ? (
             <>
@@ -652,6 +699,41 @@ export function Deployment() {
           )}
         </Button>
       </div>
+
+      {/* Active Deployment Details */}
+      {showLogs && (
+        <Card className="glass-card mb-6 border-blue-500/20 shadow-[0_0_15px_rgba(59,130,246,0.1)]">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-lg font-semibold text-white flex items-center gap-2">
+              <Server className="w-5 h-5 text-blue-500" />
+              Deployment Details
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="bg-slate-900/50 p-3 rounded-lg border border-slate-800">
+                <p className="text-xs text-muted-foreground uppercase tracking-wider font-semibold mb-1">Server IP</p>
+                <p className="text-base font-medium text-white break-all flex items-center gap-2">
+                  <Hash className="w-4 h-4 text-slate-500" />
+                  {selectedServer?.host_ip}
+                </p>
+              </div>
+              <div className="bg-slate-900/50 p-3 rounded-lg border border-slate-800">
+                 <p className="text-xs text-muted-foreground uppercase tracking-wider font-semibold mb-1">Domain{bulkMode || mappings.length > 1 ? 's' : ''}</p>
+                 <p className="text-base font-medium text-white break-all flex items-center gap-2">
+                   <Globe className="w-4 h-4 text-slate-500 shrink-0" />
+                   <span className="truncate">
+                     {(() => {
+                       if (bulkMode) return bulkDomains.split('\n').map(d => d.trim()).filter(Boolean).join(', ') || 'None';
+                       return mappings.map(m => m.domain.trim()).filter(Boolean).join(', ') || 'None';
+                     })()}
+                   </span>
+                 </p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Progress Stepper */}
       {showLogs && progressData && progressData.progress_steps && progressData.progress_steps.length > 0 && (
@@ -693,7 +775,7 @@ export function Deployment() {
                         step.status === 'in_progress' ? "text-blue-400 font-semibold" :
                           step.status === 'error' ? "text-red-400" : "text-slate-500"
                     )}>
-                      {step.name}
+                      {step.name === 'Uploading Files' ? 'Connecting MTA' : step.name === 'Installing PowerMTA' ? 'Installing VelkoMTA' : step.name}
                     </p>
                     {step.status === 'in_progress' && progressData.message && (
                       <p className="text-xs text-muted-foreground mt-1 bg-slate-900/50 p-2 rounded-md border border-slate-800 animate-pulse">

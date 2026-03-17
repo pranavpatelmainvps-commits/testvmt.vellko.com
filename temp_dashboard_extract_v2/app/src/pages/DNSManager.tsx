@@ -1,27 +1,57 @@
-import { useState } from 'react';
-import { Globe, Copy, CheckCircle, Server, Shield } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { Globe, Copy, CheckCircle, Server, Shield, Loader2 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import { useDNSInfo } from '@/hooks/useApi';
+import { fetchApi } from '@/lib/api';
 import { toast } from 'sonner';
+
+interface InstalledServer {
+  domain?: string;
+  [key: string]: any;
+}
 
 export function DNSManager() {
   const [domain, setDomain] = useState('');
   const { fetchDNSInfo, isLoading, error, data } = useDNSInfo();
   const [copiedField, setCopiedField] = useState<string | null>(null);
 
-  const handleGenerate = async () => {
-    if (!domain.trim()) {
-      toast.error('Please enter a domain');
-      return;
-    }
+  const [availableDomains, setAvailableDomains] = useState<string[]>([]);
+  const [isLoadingServers, setIsLoadingServers] = useState(true);
+
+  useEffect(() => {
+    const fetchDomains = async () => {
+      try {
+        const result = await fetchApi<{ servers: InstalledServer[] }>('/api/servers');
+        const domains = Array.from(new Set(
+          (result.servers || [])
+            .map(s => s.domain)
+            .filter(Boolean) as string[]
+        ));
+        setAvailableDomains(domains);
+        if (domains.length > 0) {
+          setDomain(domains[0]);
+          fetchDNSInfo(domains[0]).catch(() => {});
+        }
+      } catch (err) {
+        toast.error('Failed to load deployed domains');
+      } finally {
+        setIsLoadingServers(false);
+      }
+    };
+    fetchDomains();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleDomainSelect = async (selectedDomain: string) => {
+    setDomain(selectedDomain);
+    if (!selectedDomain) return;
     try {
-      await fetchDNSInfo(domain);
+      await fetchDNSInfo(selectedDomain);
     } catch (err) {
-      toast.error('Failed to generate DNS configuration');
+      toast.error('Failed to fetch DNS configuration');
     }
   };
 
@@ -47,23 +77,42 @@ export function DNSManager() {
       {/* Input Section */}
       <Card className="glass-card">
         <CardContent className="p-6">
-          <div className="flex gap-4">
-            <div className="flex-1">
-              <Input
-                placeholder="Enter domain name (e.g., example.com)"
-                value={domain}
-                onChange={(e) => setDomain(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleGenerate()}
-                className="bg-slate-900 border-slate-700 text-white"
-              />
-            </div>
-            <Button
-              onClick={handleGenerate}
-              disabled={isLoading}
-              className="bg-blue-600 hover:bg-blue-700 min-w-[150px]"
-            >
-              {isLoading ? 'Generating...' : 'Generate Config'}
-            </Button>
+          <div className="flex gap-4 items-end">
+            {isLoadingServers ? (
+              <div className="flex items-center gap-2 text-slate-400">
+                <Loader2 className="w-5 h-5 animate-spin" />
+                <span>Loading deployed domains...</span>
+              </div>
+            ) : availableDomains.length === 0 ? (
+              <div className="text-slate-400">
+                No deployed domains found. Please deploy a server first.
+              </div>
+            ) : (
+              <div className="flex-1 max-w-xl">
+                <label className="text-sm font-medium text-slate-300 mb-2 block">
+                  Select Deployed Domain
+                </label>
+                <select
+                  value={domain}
+                  onChange={(e) => handleDomainSelect(e.target.value)}
+                  className="flex h-10 w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm ring-offset-background disabled:cursor-not-allowed disabled:opacity-50 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="" disabled>Select a domain...</option>
+                  {availableDomains.map(d => (
+                    <option key={d} value={d}>{d}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+            
+            {availableDomains.length > 0 && (
+              <Button
+                disabled
+                className="bg-slate-800 text-slate-400 min-w-[150px] cursor-not-allowed"
+              >
+                {isLoading ? 'Fetching...' : 'Auto-Synced'}
+              </Button>
+            )}
           </div>
         </CardContent>
       </Card>
