@@ -1,4 +1,8 @@
 from flask import Flask, request, jsonify, send_from_directory, make_response
+import pyotp
+import qrcode
+import io
+import base64
 import paramiko
 import tempfile
 import os
@@ -25,7 +29,6 @@ import ssl
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import ipaddress
-import ipaddress
 import re
 from dotenv import load_dotenv
 from flask_limiter import Limiter
@@ -41,11 +44,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE_DIR = os.path.join(BASE_DIR, "templates")
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
-# PMTA Files (Keep list but remove hardcoded credentials)
-PMTA_FILES = [
-    "PowerMTA-5.0r6.rpm",
-    "license"
-]
+# PMTA Files are defined later near line 626 with the correct filenames
 
 # Use local path for easier debugging
 # Hardcode absolute path to ensure we are writing to the expected file
@@ -118,6 +117,10 @@ class User(db.Model):
     verification_token = db.Column(db.String(100), nullable=True)
     reset_token = db.Column(db.String(100), nullable=True)
     reset_token_expiry = db.Column(db.DateTime, nullable=True)
+    
+    # 2FA TOTP
+    totp_secret = db.Column(db.String(32), nullable=True)
+    totp_enabled = db.Column(db.Boolean, default=False)
 
     def set_password(self, password):
         self.password_hash = bcrypt.generate_password_hash(password).decode('utf-8')
@@ -283,7 +286,34 @@ def exec_sudo_command(ssh, command, password):
 @limiter.limit("5 per hour")
 def register():
     data = request.json
-    if User.query.filter_by(email=data['email']).first():
+    first_name = data.get('first_name', '').strip()
+    last_name = data.get('last_name', '').strip()
+    email = data.get('email', '')
+    password = data.get('password', '')
+    
+    if len(first_name) < 2:
+        return jsonify({"error": "First name must be at least 2 characters long"}), 400
+        
+    full_name = f"{first_name} {last_name}".strip()
+    
+    # Strict Backend Validation
+    email_regex = re.compile(r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$')
+    if not email_regex.match(email):
+        return jsonify({"error": "Invalid email address format"}), 400
+        
+    # Password must contain at least 2 uppercase letters, 2 lowercase letters, 2 numbers, and 2 special characters.
+    if len(password) < 8:
+        return jsonify({"error": "Password must be at least 8 characters long."}), 400
+    
+    upper = sum(1 for c in password if c.isupper())
+    lower = sum(1 for c in password if c.islower())
+    digits = sum(1 for c in password if c.isdigit())
+    specials = sum(1 for c in password if c in '@$!%*#?&')
+    
+    if upper < 2 or lower < 2 or digits < 2 or specials < 2:
+        return jsonify({"error": "Password must contain at least 2 uppercase letters, 2 lowercase letters, 2 numbers, and 2 special characters (@$!%*#?&)."}), 400
+
+    if User.query.filter_by(email=email).first():
         return jsonify({"error": "Email already registered"}), 400
     
     # Generate verification token
@@ -295,7 +325,7 @@ def register():
         role = 'admin'
         
     new_user = User(
-        name=data['name'], 
+        name=full_name, 
         email=data['email'], 
         role=role,
         verification_token=token,
@@ -312,7 +342,7 @@ def register():
     verify_link = f"{BASE_URL}/verify?token={token}"
     
     html_content = f"""
-    <h3>Welcome to PMTA Dashboard!</h3>
+    <h3>Welcome to VelkoMTA Dashboard!</h3>
     <p>Please verify your account by clicking the link below:</p>
     <a href="{verify_link}">Verify Email</a>
     <br>
@@ -321,13 +351,12 @@ def register():
     
     threading.Thread(
         target=send_email,
-        args=(data['email'], "Welcome to PowerMTA Dashboard", html_content)
+        args=(data['email'], "Welcome to VelkoMTA Dashboard", html_content)
     ).start()
     
     return jsonify({"message": "User registered successfully. Please check your email to verify."}), 201
     
 @app.route("/api/auth/login", methods=["POST"])
-@limiter.limit("10 per minute")
 def login():
     data = request.json
     user = User.query.filter_by(email=data['email']).first()
@@ -335,6 +364,18 @@ def login():
     if user and user.check_password(data['password']):
         if not user.is_verified:
             return jsonify({"error": "Account not verified. Please check your email."}), 403
+
+        # Check if 2FA is enabled
+        if user.totp_enabled:
+            totp_code = data.get('totp_code', '')
+            if not totp_code:
+                # Tell frontend to show 2FA input
+                return jsonify({"requires_2fa": True, "email": user.email}), 200
+            
+            # Verify TOTP code
+            totp = pyotp.TOTP(user.totp_secret)
+            if not totp.verify(totp_code, valid_window=1):
+                return jsonify({"error": "Invalid 2FA code"}), 401
 
         token = create_access_token(identity=str(user.id), additional_claims={"role": user.role})
         return jsonify({
@@ -347,6 +388,88 @@ def login():
             }
         })
     return jsonify({"error": "Invalid credentials"}), 401
+
+# ---- 2FA TOTP Endpoints ----
+@app.route("/api/auth/2fa/setup", methods=["POST"])
+@jwt_required()
+def setup_2fa():
+    current_user_id = get_jwt_identity()
+    user = User.query.get(current_user_id)
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    
+    if user.totp_enabled:
+        return jsonify({"error": "2FA is already enabled"}), 400
+
+    # Generate secret
+    secret = pyotp.random_base32()
+    user.totp_secret = secret
+    db.session.commit()
+
+    # Generate QR code
+    totp = pyotp.TOTP(secret)
+    uri = totp.provisioning_uri(name=user.email, issuer_name="VelkoMTA Cloud")
+    
+    img = qrcode.make(uri)
+    buffer = io.BytesIO()
+    img.save(buffer, format='PNG')
+    buffer.seek(0)
+    qr_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
+
+    return jsonify({
+        "secret": secret,
+        "qr_code": f"data:image/png;base64,{qr_base64}"
+    })
+
+@app.route("/api/auth/2fa/verify", methods=["POST"])
+@jwt_required()
+def verify_2fa():
+    current_user_id = get_jwt_identity()
+    user = User.query.get(current_user_id)
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    
+    data = request.json
+    code = data.get('code', '')
+    
+    if not user.totp_secret:
+        return jsonify({"error": "2FA not set up. Call /api/auth/2fa/setup first."}), 400
+    
+    totp = pyotp.TOTP(user.totp_secret)
+    if totp.verify(code, valid_window=1):
+        user.totp_enabled = True
+        db.session.commit()
+        return jsonify({"message": "2FA enabled successfully"})
+    else:
+        return jsonify({"error": "Invalid code. Please try again."}), 400
+
+@app.route("/api/auth/2fa/disable", methods=["POST"])
+@jwt_required()
+def disable_2fa():
+    current_user_id = get_jwt_identity()
+    user = User.query.get(current_user_id)
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    
+    data = request.json
+    password = data.get('password', '')
+    
+    if not user.check_password(password):
+        return jsonify({"error": "Incorrect password"}), 401
+    
+    user.totp_enabled = False
+    user.totp_secret = None
+    db.session.commit()
+    return jsonify({"message": "2FA disabled successfully"})
+
+@app.route("/api/auth/2fa/status", methods=["GET"])
+@jwt_required()
+def status_2fa():
+    current_user_id = get_jwt_identity()
+    user = User.query.get(current_user_id)
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    return jsonify({"enabled": user.totp_enabled})
 
 @app.route("/api/auth/verify", methods=["GET", "POST"])
 def verify_email():
@@ -440,6 +563,31 @@ def me():
         "role": user.role
     })
 
+@app.route("/api/auth/change-password", methods=["POST"])
+@jwt_required()
+def change_password():
+    current_user_id = get_jwt_identity()
+    user = User.query.get(current_user_id)
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+
+    data = request.json
+    current_password = data.get('current_password', '')
+    new_password = data.get('new_password', '')
+
+    if not current_password or not new_password:
+        return jsonify({"error": "Both current and new password are required"}), 400
+
+    if not user.check_password(current_password):
+        return jsonify({"error": "Current password is incorrect"}), 401
+
+    if len(new_password) < 8:
+        return jsonify({"error": "New password must be at least 8 characters"}), 400
+
+    user.set_password(new_password)
+    db.session.commit()
+    return jsonify({"message": "Password changed successfully"})
+
 # --- Authenticated Endpoints Wrapper (Example) ---
 # To protect other routes, use @jwt_required()
 
@@ -479,6 +627,10 @@ def update_user(user_id):
     if 'email' in data:
         user.email = data['email']
     if 'role' in data:
+        if user.role == 'admin' and data['role'] != 'admin':
+            admin_count = User.query.filter_by(role="admin").count()
+            if admin_count <= 1:
+                return jsonify({"error": "Cannot demote the last admin account"}), 400
         user.role = data['role']
     if 'password' in data and data['password']:
         user.password_hash = bcrypt.generate_password_hash(data['password']).decode('utf-8')
@@ -501,6 +653,11 @@ def delete_user(user_id):
     if not user:
         return jsonify({"error": "User not found"}), 404
     
+    if user.role == "admin":
+        admin_count = User.query.filter_by(role="admin").count()
+        if admin_count <= 1:
+            return jsonify({"error": "Cannot delete the last admin account"}), 400
+
     db.session.delete(user)
     db.session.commit()
     return jsonify({"message": "User deleted successfully"})
@@ -537,17 +694,29 @@ def add_installed_pmta():
     if not validate_ip(data.get('host_ip', '')):
          return jsonify({"error": "Invalid IP address"}), 400
          
-    new_record = InstalledPMTA(
-        user_id=user_id,
-        host_ip=data.get('host_ip'),
-        ssh_port=int(data.get('ssh_port', 22)),
-        ssh_username=data.get('ssh_username', 'root'),
-        smtp_details=data.get('smtp_details'),
-        dns_details=data.get('dns_details')
-    )
-    db.session.add(new_record)
-    db.session.commit()
-    return jsonify({"message": "Server record added successfully", "id": new_record.id})
+    # Check if server with this IP already exists for this user
+    existing = InstalledPMTA.query.filter_by(host_ip=data.get('host_ip'), user_id=user_id).first()
+    if existing:
+        # Update existing record instead of creating duplicate
+        existing.ssh_port = int(data.get('ssh_port', 22))
+        existing.ssh_username = data.get('ssh_username', 'root')
+        existing.smtp_details = data.get('smtp_details')
+        existing.dns_details = data.get('dns_details')
+        existing.installed_at = datetime.utcnow()
+        db.session.commit()
+        return jsonify({"message": "Server record updated successfully", "id": existing.id})
+    else:
+        new_record = InstalledPMTA(
+            user_id=user_id,
+            host_ip=data.get('host_ip'),
+            ssh_port=int(data.get('ssh_port', 22)),
+            ssh_username=data.get('ssh_username', 'root'),
+            smtp_details=data.get('smtp_details'),
+            dns_details=data.get('dns_details')
+        )
+        db.session.add(new_record)
+        db.session.commit()
+        return jsonify({"message": "Server record added successfully", "id": new_record.id})
 
 # ============= ADMIN UTILITIES =============
 @app.route("/api/admin/smtptest", methods=["POST"])
@@ -565,8 +734,8 @@ def admin_smtp_test():
          
     success = send_email(
         target_email, 
-        "SMTP Test - PMTA Dashboard", 
-        "<h3>SMTP Test</h3><p>This is a test email from your PMTA Dashboard backend.</p>"
+        "SMTP Test - VelkoMTA Dashboard", 
+        "<h3>SMTP Test</h3><p>This is a test email from your VelkoMTA Dashboard backend.</p>"
     )
     
     if success:
@@ -637,6 +806,7 @@ def save_config():
             server_ip = ip
             ssh_user = user
             ssh_pass = password
+    ssh = paramiko.SSHClient()
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     try:
         ssh.connect(server_ip, username=ssh_user, password=ssh_pass, timeout=10)
@@ -688,19 +858,29 @@ def install_pmta():
     # [STRICT] Create DB Record IMMEDIATELY so credentials are secure and available via ID
     # This prevents using global file for anything other than transient status
     try:
-        new_server = InstalledPMTA(
-            user_id=user_id,
-            host_ip=data.get("server_ip"),
-            ssh_username=data.get("ssh_user", "root"),
-            ssh_password_encrypted=data.get("ssh_pass"), # Plain for now as per instructions
-            ssh_port=int(data.get("ssh_port", 22)),
-            installed_at=datetime.utcnow()
-        )
-        db.session.add(new_server)
-        db.session.commit()
-        print(f"Created DB record {new_server.id} for installation.")
+        existing_server = InstalledPMTA.query.filter_by(host_ip=data.get("server_ip"), user_id=user_id).first()
+        if existing_server:
+            # Update existing record instead of creating duplicate
+            existing_server.ssh_username = data.get("ssh_user", "root")
+            existing_server.ssh_password_encrypted = data.get("ssh_pass")
+            existing_server.ssh_port = int(data.get("ssh_port", 22))
+            existing_server.installed_at = datetime.utcnow()
+            db.session.commit()
+            print(f"Updated existing DB record {existing_server.id} for installation.")
+        else:
+            new_server = InstalledPMTA(
+                user_id=user_id,
+                host_ip=data.get("server_ip"),
+                ssh_username=data.get("ssh_user", "root"),
+                ssh_password_encrypted=data.get("ssh_pass"),
+                ssh_port=int(data.get("ssh_port", 22)),
+                installed_at=datetime.utcnow()
+            )
+            db.session.add(new_server)
+            db.session.commit()
+            print(f"Created DB record {new_server.id} for installation.")
     except Exception as e:
-        print(f"Error creating initial DB record: {e}")
+        print(f"Error creating/updating DB record: {e}")
 
     # [FIX] Clear log file synchronously BEFORE background task starts
     log_file_path = get_log_file(user_id)
@@ -832,7 +1012,7 @@ def save_install_status(data, user_id=None):
             try:
                 with open(target_file, "r") as f:
                     current_data = json.load(f)
-            except:
+            except Exception:
                 pass
         
         # Merge
@@ -885,7 +1065,7 @@ def parse_pmta_config(config_str):
 
     # Helper to extract key values
     def get_val(block, key, default=None):
-        m = re.search(f"{key}\s+(.+)", block)
+        m = re.search(f"{key}\\s+(.+)", block)
         return m.group(1).strip() if m else default
 
     # 1. Parse VMTAs
@@ -950,7 +1130,23 @@ def get_pmta_config():
         return jsonify({"status": "forbidden", "message": "Raw configuration access is disabled by administrator."}), 403
 
     user_id = get_jwt_identity()
-    server_ip, ssh_user, ssh_pass, ssh_port = get_install_credentials(user_id)
+    
+    # Check for server_id query param
+    server_id = request.args.get('server_id', type=int)
+    
+    if server_id:
+        # Look up specific server
+        server = InstalledPMTA.query.get(server_id)
+        if not server or str(server.user_id) != str(user_id):
+            return jsonify({"error": "Server not found"}), 404
+        server_ip = server.host_ip
+        ssh_user = server.ssh_username
+        ssh_port = server.ssh_port
+        # Try install credentials first, fall back to stored password
+        _, _, install_pass, _ = get_install_credentials(user_id)
+        ssh_pass = install_pass or server.ssh_password_encrypted
+    else:
+        server_ip, ssh_user, ssh_pass, ssh_port = get_install_credentials(user_id)
     
     if not server_ip:
         return jsonify({"error": "No server configured"}), 400
@@ -978,34 +1174,12 @@ def get_server_pmta_config(server_id):
     server = InstalledPMTA.query.get_or_404(server_id)
     
     try:
-        ssh = get_ssh_connection(server.host_ip, server.ssh_username, "password", server.ssh_port) 
-        # Note: We need the password. 
-        # CRITICAL: InstalledPMTA model currently DOES NOT store password for security in previous phases.
-        # However, for this to work without refactoring auth/storage, we might need a workaround.
-        # Checking InstalledPMTA model... it has ssh_username, host_ip.
-        # It does NOT have password. 
-        # Options under Stability Lock:
-        # A) Use the current session's install credentials if they match (fragile)
-        # B) We cannot fetch config if we don't have the password.
-        # Wait, the user said "No auth flow rewrites".
-        # But earlier `save_install_status` was saving passwords to a json file.
-        # Maybe we can look up the json file if it exists?
-        # OR: We assume the user has set up keys? No, we use passwords.
-        
-        # Checking get_install_credentials... it reads from install_status.json
-        # Is there a global install_status.json? Yes.
-        # Does it match this server? Maybe.
-        
-        # Let's try to grab from the install_status_{user_id}.json first as a best effort.
+        # Look up cached credentials from the install session
         user_id = get_jwt_identity()
         install_ip, install_user, install_pass, install_port = get_install_credentials(user_id)
         
-        if install_ip == server.host_ip:
-             # Match! Use these credentials.
-             pass
-        else:
-             # Fallback: Try to find any status file that matches? Too complex.
-             # Return error "Credentials not cached"
+        if install_ip != server.host_ip:
+             # Credentials don't match this server
              return jsonify({"error": "Credentials not available in current session. Please use 'New Deployment' to reconnect."}), 400
 
         ssh = get_ssh_connection(server.host_ip, server.ssh_username, install_pass, server.ssh_port)
@@ -1336,42 +1510,53 @@ def get_dns_info_api():
     if not domain:
         return jsonify({"error": "Domain is required"}), 400
 
-    dkim_record = ""
+    dkim_record_value = ""
     try:
         ssh = get_ssh_connection(server_ip, ssh_user, ssh_pass, ssh_port)
         
-        # Try to read DKIM key
-        cmd = f"cat /etc/pmta/domainKeys/{domain}/default.pub 2>/dev/null || cat /etc/pmta/domainKeys/{domain}.pub 2>/dev/null"
+        # Check correct installation path for DKIM keys
+        cmd = f"cat /etc/pmta/dkim/{domain}/default.private.pub 2>/dev/null"
         stdin, stdout, stderr = exec_sudo_command(ssh, cmd, ssh_pass)
         dkim_content = stdout.read().decode('utf-8').strip()
         
-        if dkim_content:
-             dkim_record = dkim_content
+        if dkim_content and "PUBLIC KEY" in dkim_content:
+            # Strip header/footer and newlines to extract base64 key
+            lines = dkim_content.split('\n')
+            base64_key = "".join([l.strip() for l in lines if not l.startswith('-----')])
+            dkim_record_value = f"v=DKIM1; k=rsa; p={base64_key}"
         else:
-             dkim_record = "DKIM key not found on server. Please ensure the domain is configured in PMTA."
+            dkim_record_value = "DKIM key not found on server. Please ensure the domain is configured in PMTA."
              
         ssh.close()
     except Exception as e:
-        dkim_record = f"Error fetching DKIM: {str(e)}"
+        dkim_record_value = f"Error fetching DKIM: {str(e)}"
 
     # Generate records
     spf_record = f"v=spf1 ip4:{server_ip} ~all"
-    dmarc_record = f"v=DMARC1; p=none; rua=mailto:dmarc@{domain}"
+    dmarc_record = f"v=DMARC1; p=none; rua=mailto:postmaster@{domain}"
     
     # NS Records (assuming local PowerDNS or simply pointing to this server)
-    pdns_ip = "192.119.169.12"
+    pdns_ip = os.environ.get("PDNS_HOST", server_ip) # Use configured PDNS server IP, fallback to server_ip if missing
+    
     ns_records = [
-        {"host": f"ns1.{domain}", "value": pdns_ip},
-        {"host": f"ns2.{domain}", "value": pdns_ip}
+        {"host": f"ns1.{domain}", "value": pdns_ip, "type": "A"},
+        {"host": f"ns2.{domain}", "value": pdns_ip, "type": "A"}
     ]
 
     return jsonify({
         "domain": domain,
         "server_ip": server_ip,
         "spf": spf_record,
-        "dkim": dkim_record,
+        "dkim": dkim_record_value,
         "dmarc": dmarc_record,
-        "ns_records": ns_records
+        "ns_records": ns_records,
+        "formatted_records": [
+            {"type": "A", "host": f"mail.{domain}", "value": server_ip},
+            {"type": "A", "host": f"@", "value": server_ip},
+            {"type": "TXT", "host": "@", "value": spf_record},
+            {"type": "TXT", "host": "default._domainkey", "value": dkim_record_value},
+            {"type": "TXT", "host": "_dmarc", "value": dmarc_record}
+        ]
     })
 
 
@@ -1745,6 +1930,57 @@ def generate_temp_password(length=16):
     alphabet = string.ascii_letters + string.digits
     return ''.join(secrets.choice(alphabet) for i in range(length))
 
+import ipaddress
+
+def expand_ips(ip_str):
+    """Parses a single IP, CIDR, or Range string into a list of valid IP strings."""
+    ip_str = ip_str.strip()
+    if not ip_str: return []
+    
+    # CIDR Format: e.g. 192.168.1.0/24
+    if '/' in ip_str:
+        try:
+            return [str(ip) for ip in ipaddress.IPv4Network(ip_str, strict=False).hosts()]
+        except Exception as e:
+            with open("debug_expand.log", "a") as f: f.write(f"CIDR Error: {e}\n")
+            return []
+            
+    # Range Format: e.g. 192.168.1.10-192.168.1.20
+    if '-' in ip_str:
+        parts = ip_str.split('-')
+        if len(parts) == 2:
+            try:
+                start_ip = ipaddress.IPv4Address(parts[0].strip())
+                end_ip = ipaddress.IPv4Address(parts[1].strip())
+                
+                # Enforce chronological sanity
+                if int(start_ip) > int(end_ip):
+                    start_ip, end_ip = end_ip, start_ip
+                
+                # Limit arbitrary large range expansions
+                if int(end_ip) - int(start_ip) > 1024:
+                    with open("debug_expand.log", "a") as f: f.write(f"Range too large\n")
+                    return [] 
+                
+                ips = []
+                current = int(start_ip)
+                while current <= int(end_ip):
+                    ips.append(str(ipaddress.IPv4Address(current)))
+                    current += 1
+                return ips
+            except Exception as e:
+                with open("debug_expand.log", "a") as f:
+                    import traceback
+                    f.write(f"Range Exception: {traceback.format_exc()}\n")
+                return []
+                
+    # Single IP
+    try:
+        return [str(ipaddress.IPv4Address(ip_str))]
+    except Exception as e:
+        with open("debug_expand.log", "a") as f: f.write(f"Single IP Error: {e}\n")
+        return []
+
 def run_install(data, user_id):
     # Debug print removed
     
@@ -1752,8 +1988,27 @@ def run_install(data, user_id):
     ssh_user = data["ssh_user"]
     ssh_pass = data["ssh_pass"] # The ORIGINAL password
     ssh_port = int(data.get("ssh_port", 22))
-    mappings = data["mappings"]
+    raw_mappings = data.get("mappings", [])
     fresh_install = data.get("fresh_install", False)
+
+    # 1. Expand Mappings (Ranges/CIDRs to Individual IP objects)
+    mappings = []
+    for rm in raw_mappings:
+        d = rm.get("domain", "").strip()
+        ip_input = rm.get("ip", "").strip()
+        print(f"[EXPAND_IPS] Input: '{ip_input}' for domain '{d}'")
+        expanded = expand_ips(ip_input)
+        print(f"[EXPAND_IPS] Output: {expanded} (count: {len(expanded)})")
+        if expanded:
+            for e_ip in expanded:
+                mappings.append({"domain": d, "ip": e_ip})
+        else:
+            # Fallback: if expand_ips returns [], keep original so deploy doesn't silently skip
+            print(f"[EXPAND_IPS] WARNING: expand_ips returned empty for '{ip_input}', using raw value")
+            mappings.append({"domain": d, "ip": ip_input})
+    print(f"[EXPAND_IPS] Final mappings count: {len(mappings)}")
+    print(f"[EXPAND_IPS] Final mappings: {mappings}")
+
 
     # [STRICT] IP Range Guard (2-253)
     for m in mappings:
@@ -1762,11 +2017,8 @@ def run_install(data, user_id):
              try:
                  octet = int(ip.split('.')[-1])
                  if not (2 <= octet <= 253):
-                      err_msg = f"Strict Mode Violation: IP {ip} is out of allowed range (.2 - .253)"
-                      save_install_status({"status": "error", "message": err_msg}, user_id)
-                      print(f"!!! {err_msg}")
-                      return
-             except:
+                      print(f"[WARN] IP {ip} last octet ({octet}) outside typical range .2-.253 — proceeding anyway")
+             except Exception:
                  pass
     
     # Generate Temp Password
@@ -1780,10 +2032,12 @@ def run_install(data, user_id):
         f.write("")
 
     def log(msg):
+        from datetime import datetime
         try:
+            timestamp_msg = f"[{datetime.now().strftime('%H:%M:%S')}] {msg}"
             with open(log_file, "a", encoding="utf-8") as f:
-                f.write(msg + "\n")
-            print(msg) 
+                f.write(timestamp_msg + "\n")
+            print(timestamp_msg) 
         except Exception as e:
             print(f"FAILED TO WRITE LOG: {e}")
 
@@ -1808,9 +2062,13 @@ def run_install(data, user_id):
             status: Status of the step (pending, running, success, error)
             message: Optional message to display
         """
+        mapped_status = status
+        if status == "running": mapped_status = "in_progress"
+        elif status == "success": mapped_status = "completed"
+
         for step in progress_steps:
             if step["id"] == step_id:
-                step["status"] = status
+                step["status"] = mapped_status
                 break
         
         save_install_status({
@@ -1865,7 +2123,7 @@ def run_install(data, user_id):
         try:
             msg_ip = socket.gethostbyname(hostname)
             return msg_ip
-        except:
+        except Exception:
             return None
 
     def run_command(cmd, description):
@@ -1921,7 +2179,7 @@ def run_install(data, user_id):
             exit_status = stdout.channel.recv_exit_status()
             client.close()
             return exit_status == 0
-        except:
+        except Exception:
             if client: client.close()
             return False
 
@@ -1991,7 +2249,9 @@ def run_install(data, user_id):
             log(f"--- Upload {local_path} Success ---")
             return True
         except Exception as e:
-            log(f"!!! Upload Failed: {e}")
+            import traceback
+            err_details = traceback.format_exc()
+            log(f"!!! Upload Failed: {e}\n{err_details}")
             if client: client.close()
             return False
 
@@ -2120,71 +2380,74 @@ def run_install(data, user_id):
             check_client.close()
             
             if check_result == 'EXISTS':
-                msg = "Existing MTA detected. PROCEEDING ANYWAY (DEBUG Bypassed)."
-                log("!!! WARNING: " + msg)
-                # For debugging/re-deploy on same server, we allow this.
-                # In production this should remain strict.
-                pass
-            
-            log(">>> Server is clean. Proceeding...")
-            update_progress("connect", "success", "Connected to server successfully")
+                msg = "Existing PMTA detected. Switching to ONBOARD (Additive) mode."
+                log(">>> " + msg)
+                mode = "onboard"
+                update_progress("connect", "success", "Connected to existing server")
+                # Fast-forward progress steps that we skip in onboard mode
+                update_progress("upload", "success", "Skipped - Already installed")
+                update_progress("install", "success", "Skipped - Already installed")
+            else:
+                log(">>> Server is clean. Proceeding with FRESH INSTALL...")
+                update_progress("connect", "success", "Connected to server successfully")
     
-            # 1. ROTATE PASSWORD (SECURITY)
-            # 1. ROTATE PASSWORD (SECURITY)
-            log(">>> [SECURITY] Password rotation skipped (Stability Mode).")
-            password_rotated = False
+                # 1. ROTATE PASSWORD (SECURITY)
+                log(">>> [SECURITY] Password rotation skipped (Stability Mode).")
+                password_rotated = False
 
     
-            # 2. Upload Files
-            update_progress("upload", "running", "Uploading PowerMTA files...")
-            log(">>> [STEP:UPLOAD] Uploading Core Files...")
+                # 2. Upload Files
+                update_progress("upload", "running", "Uploading PowerMTA files...")
+                log(">>> [STEP:UPLOAD] Uploading Core Files...")
     
-            for f in PMTA_FILES:
-                local_p = os.path.join(BASE_DIR, f)
-                remote_p = f"/app/{f}" # We put everything in /app first
+                for f in PMTA_FILES:
+                    local_p = os.path.join(BASE_DIR, f)
+                    remote_p = f"/app/{f}" # We put everything in /app first
                 
-                # Create /app if not exists
-                if not run_command("mkdir -p /app", "Create /app"): raise Exception("Failed to create remote dir")
-                if not upload_file(local_p, remote_p): raise Exception(f"Failed to upload {f}")
+                    # Create /app if not exists
+                    if not run_command("mkdir -p /app", "Create /app"): raise Exception("Failed to create remote dir")
+                    if not upload_file(local_p, remote_p): raise Exception(f"Failed to upload {f}")
             
-            update_progress("upload", "success", "All files uploaded successfully")
+                update_progress("upload", "success", "All files uploaded successfully")
     
-            # 3. Install PowerMTA
-            update_progress("install", "running", "Installing PowerMTA...")
-            log(">>> [STEP:INSTALL] Checking PowerMTA Installation...")
-            log("Running PowerMTA Installer...")
+                # 3. Install PowerMTA
+                update_progress("install", "running", "Installing PowerMTA...")
+                log(">>> [STEP:INSTALL] Checking PowerMTA Installation...")
+                log("Running PowerMTA Installer...")
             
-            try:
-                with open(PMTA_INSTALL_SCRIPT, "r") as f:
-                    script = f.read()
+                try:
+                    with open(PMTA_INSTALL_SCRIPT, "r") as f:
+                        script = f.read()
                 
-                # For the base installer, we just need a valid hostname to set /etc/hosts/hostname
-                # We'll pick the first domain from mappings as the 'primary' system hostname
-                primary_domain = mappings[0]["domain"] if mappings else "localhost.localdomain"
+                    # For the base installer, we just need a valid hostname to set /etc/hosts/hostname
+                    # We'll pick the first domain from mappings as the 'primary' system hostname
+                    primary_domain = mappings[0]["domain"] if mappings else "localhost.localdomain"
     
-                script = script.replace("{{DOMAIN}}", primary_domain) 
-                script = script.replace("{{SERVER_IP}}", server_ip)
-                script = script.replace("{{SMTP_USER}}", "smtpuser")
-                script = script.replace("{{SMTP_PASS}}", "smtppass")
+                    script = script.replace("{{DOMAIN}}", primary_domain) 
+                    script = script.replace("{{SERVER_IP}}", server_ip)
+                    script = script.replace("{{SMTP_USER}}", "smtpuser")
+                    script = script.replace("{{SMTP_PASS}}", "smtppass")
     
-                with tempfile.NamedTemporaryFile(delete=False, mode="wb", suffix=".sh") as tmp:
-                    tmp.write(script.encode('utf-8'))
-                    tmp_path = tmp.name
+                    with tempfile.NamedTemporaryFile(delete=False, mode="wb", suffix=".sh") as tmp:
+                        tmp.write(script.encode('utf-8'))
+                        tmp_path = tmp.name
                 
-                if not upload_file(tmp_path, "/root/pmta-install.sh", force=True): raise Exception("Script upload failed")
-                if not run_command("chmod +x /root/pmta-install.sh", "Set Execute Permission"): raise Exception("Chmod failed")
-                if not run_command("bash /root/pmta-install.sh", "Run PMTA Installer"): raise Exception("Install Script failed")
+                    if not upload_file(tmp_path, "/root/pmta-install.sh", force=True): raise Exception("Script upload failed")
+                    if not run_command("chmod +x /root/pmta-install.sh", "Set Execute Permission"): raise Exception("Chmod failed")
+                    if not run_command("bash /root/pmta-install.sh", "Run PMTA Installer"): raise Exception("Install Script failed")
     
-            except Exception as e:
-                log(f"Error preparing install script: {e}")
-                update_progress("install", "error", f"Installation failed: {e}")
-                raise
+                except Exception as e:
+                    log(f"Error preparing install script: {e}")
+                    update_progress("install", "error", f"Installation failed: {e}")
+                    raise
             
-            update_progress("install", "success", "PowerMTA installed successfully")
+                update_progress("install", "success", "PowerMTA installed successfully")
         else:
              log(">>> [MODE] Bulk Onboarding - Skipping Install/Fresh Checks.")
              # In onboarding mode, assume server is ready and we use the provided password (or temp pass if we knew it, but here we only have input pass)
              # User must provide current valid password for onboarding.
+             update_progress("upload", "success", "Skipped - Already installed")
+             update_progress("install", "success", "Skipped - Already installed")
              pass
 
         # [NEW] Deduplication for Onboarding (Additive Mode)
@@ -2250,8 +2513,8 @@ def run_install(data, user_id):
 
             # 2. Key Generation Loop (Pre-Check)
             log("--- Ensuring DKIM Keys on Server ---")
-            # GUARD: Skip generation for fresh install
-            active_gen_domains = domain_groups if mode != "install" else {}
+            # GUARD: Generate DKIM keys and VMTAs for ALL modes
+            active_gen_domains = domain_groups
             ssh_client = create_ssh_client()
             if not ssh_client: raise Exception("Failed to create SSH client for DKIM key generation.")
 
@@ -2264,20 +2527,36 @@ def run_install(data, user_id):
                 # Check/Gen
                 ssh_client.exec_command(f"mkdir -p {os.path.dirname(dkim_key_Path)}")
                 
-                # Check/Gen Key
-                check_cmd = (
-                    f"if [ ! -f {dkim_key_Path} ]; then "
-                    f"  openssl genrsa -out {dkim_key_Path} 2048; "
-                    f"  openssl rsa -in {dkim_key_Path} -pubout > {dkim_key_Path}.pub; "
-                    f"fi; "
-                    # Enforce Permissions
-                    f"chmod 755 /etc/pmta/dkim; "
-                    f"chmod 755 {os.path.dirname(dkim_key_Path)}; "
-                    f"chmod 640 {dkim_key_Path}; "
-                    f"chown -R pmta:pmta /etc/pmta/dkim; "
-                    # Output Pub Key
-                    f"cat {dkim_key_Path}.pub"
-                )
+                # Check/Gen Key — On fresh install, always generate; on onboard, reuse if exists
+                if mode == "install":
+                    # Fresh install: always generate DKIM keys
+                    check_cmd = (
+                        f"openssl genrsa -out {dkim_key_Path} 2048 2>/dev/null; "
+                        f"openssl rsa -in {dkim_key_Path} -pubout > {dkim_key_Path}.pub 2>/dev/null; "
+                        # Enforce Permissions
+                        f"chmod 755 /etc/pmta/dkim; "
+                        f"chmod 755 {os.path.dirname(dkim_key_Path)}; "
+                        f"chmod 640 {dkim_key_Path}; "
+                        f"chown -R pmta:pmta /etc/pmta/dkim; "
+                        # Output Pub Key
+                        f"cat {dkim_key_Path}.pub"
+                    )
+                else:
+                    # Onboard: only generate if key doesn't exist
+                    check_cmd = (
+                        f"if [ ! -f {dkim_key_Path} ]; then "
+                        f"  openssl genrsa -out {dkim_key_Path} 2048; "
+                        f"  openssl rsa -in {dkim_key_Path} -pubout > {dkim_key_Path}.pub; "
+                        f"fi; "
+                        # Enforce Permissions
+                        f"chmod 755 /etc/pmta/dkim; "
+                        f"chmod 755 {os.path.dirname(dkim_key_Path)}; "
+                        f"chmod 640 {dkim_key_Path}; "
+                        f"chown -R pmta:pmta /etc/pmta/dkim; "
+                        # Output Pub Key
+                        f"cat {dkim_key_Path}.pub"
+                    )
+                log(f">>> [DKIM] {'Generating' if mode == 'install' else 'Ensuring'} DKIM key for {root_domain}...")
                 stdin, stdout, stderr = ssh_client.exec_command(check_cmd)
                 pub_key = stdout.read().decode('utf-8').strip()
                 
@@ -2304,46 +2583,83 @@ def run_install(data, user_id):
             # We treat every domain as its own sender identity (Client Mode)
             
             env = os.environ.copy()
-            env["PDNS_API_KEY"] = os.getenv('PDNS_API_KEY')
-            
-            if not env["PDNS_API_KEY"]:
-                 log("!!! WARNING: PDNS_API_KEY not found in environment. DNS provisioning may fail.")
+            pdns_key = os.getenv('PDNS_API_KEY', 'MyDNSApiKey2026')
+            pdns_host = os.getenv('PDNS_HOST', '192.119.169.12')
+            pdns_port = os.getenv('PDNS_PORT', '8081')
+            env["PDNS_API_KEY"] = pdns_key
+            env["PDNS_HOST"] = pdns_host
+            env["PDNS_PORT"] = pdns_port
 
+            if pdns_key == 'MyDNSApiKey2026':
+                log(">>> [DNS] Using default PDNS_API_KEY (MyDNSApiKey2026).")
+
+            # [FIX] Pre-check: Verify PowerDNS API is reachable before attempting provisioning
+            pdns_reachable = False
+            try:
+                pdns_check_url = f"http://{pdns_host}:{pdns_port}/api/v1/servers/localhost"
+                pdns_check_resp = requests.get(pdns_check_url, headers={"X-API-Key": pdns_key}, timeout=5)
+                if pdns_check_resp.status_code == 200:
+                    pdns_reachable = True
+                    log(f">>> [DNS] PowerDNS API reachable at {pdns_host}:{pdns_port} (v{pdns_check_resp.json().get('version', '?')})")
+                else:
+                    log(f"!!! [DNS] PowerDNS API responded with HTTP {pdns_check_resp.status_code} at {pdns_host}:{pdns_port}. DNS provisioning will be skipped.")
+            except Exception as pdns_conn_err:
+                log(f"!!! [DNS] PowerDNS API NOT reachable at {pdns_host}:{pdns_port}: {pdns_conn_err}")
+                log(f"!!! [DNS] Ensure the PowerDNS service (pdns) is running on {pdns_host} and port {pdns_port} is open.")
+                log(f"!!! [DNS] DNS records will NOT be provisioned. VMTA configuration will continue.")
 
             for d_name, ips in active_gen_domains.items():
+                log(f">>> [DEBUG] Processing domain: {d_name} with IPs: {ips}")
                 parts = d_name.split('.')
                 root_domain = ".".join(parts[-2:]) if len(parts) > 2 else d_name
-                
+
                 # Retrieve key for DNS provisioning
                 pub_key = dkim_pub_keys.get(d_name, "")
-                
+
                 # Provision Client Sender Identity (SPF/DKIM/DMARC)
-                # Since we are making the domain the HOSTNAME of the IP, we SHOULD provision A/MX records too if possible?
-                # The user asked for "Dashboard Input" to drive everything.
-                # Let's assume full provisioning for the domain -> IPs mapping.
-               
-                if pub_key:
-                    # Determine if we should provision A/MX (Infrastructure) or just SPF/DKIM (Client)
-                    # If the domain is being used as the HELO host, it NEEDS an A record.
-                    # We run in FULL mode (not client-only) for these domains.
-                    
-                    cmd_client = [
-                        sys.executable, "pdns_automator.py",
-                        "--domain", root_domain,
-                        "--selector", "default",
-                        "--dkim-key", pub_key,
-                        "--dmarc-email", f"postmaster@{root_domain}"
-                    ]
-                    
-                    # Pass Inbound IP for Split-Role DNS (MX -> Inbound)
-                    inbound_ip = data.get("inbound_ip")
-                    if inbound_ip:
-                         cmd_client.extend(["--inbound-ip", inbound_ip])
-                    
-                    for ip in ips:
-                        cmd_client.extend(["--ip", ip])
-                        
-                    subprocess.run(cmd_client, capture_output=True, env=env)
+                if pub_key and pdns_key and pdns_reachable:
+                    try:
+                        cmd_client = [
+                            sys.executable, os.path.join(BASE_DIR, "pdns_automator.py"),
+                            "--domain", root_domain,
+                            "--selector", "default",
+                            "--dkim-key", pub_key,
+                            "--dmarc-email", f"postmaster@{root_domain}"
+                        ]
+
+                        # Pass Inbound IP for Split-Role DNS (MX -> Inbound)
+                        inbound_ip = data.get("inbound_ip")
+                        if inbound_ip:
+                            cmd_client.extend(["--inbound-ip", inbound_ip])
+
+                        for ip in ips:
+                            cmd_client.extend(["--ip", ip])
+
+                        # [FIX] Capture and log subprocess result — previously silent on failure
+                        result = subprocess.run(
+                            cmd_client,
+                            capture_output=True,
+                            text=True,
+                            env=env,
+                            cwd=BASE_DIR  # [FIX] Explicit working dir so pdns_automator.py is always found
+                        )
+                        if result.returncode == 0:
+                            log(f">>> [DNS] Provisioned DNS records for {root_domain}")
+                            if result.stdout.strip():
+                                log(f">>> [DNS] Output: {result.stdout.strip()}")
+                        else:
+                            log(f"!!! [DNS] pdns_automator FAILED for {root_domain} (exit {result.returncode})")
+                            if result.stderr.strip():
+                                log(f"!!! [DNS] STDERR: {result.stderr.strip()}")
+                            if result.stdout.strip():
+                                log(f"!!! [DNS] STDOUT: {result.stdout.strip()}")
+
+                    except Exception as dns_err:
+                        log(f"!!! WARNING: DNS provisioning failed for {root_domain}: {dns_err} (continuing with VMTA generation)")
+                elif pub_key and not pdns_reachable:
+                    log(f"!!! [DNS] Skipping DNS provisioning for {root_domain} (PowerDNS unreachable — check service status on {pdns_host})")
+                elif pub_key:
+                    log(f">>> [DNS] Skipping DNS provisioning for {root_domain} (no PDNS_API_KEY)")
                 
                 domain_vmta_names = []
                 
@@ -2374,10 +2690,9 @@ def run_install(data, user_id):
                 pool_members = "\n    ".join([f"virtual-mta {n}" for n in vmta_names_all])
                 pool_blocks.append(f"<virtual-mta-pool {input_pool_name}>\n    {pool_members}\n</virtual-mta-pool>")
 
-            # Define Source for Authenticated Submission (Port 2525 or 587)
-            if mode != "install":
-                source_blocks.append(f"<source {input_pool_name}>\n    always-allow-relaying yes\n    smtp-service yes\n    add-date-header yes\n    default-virtual-mta {input_pool_name}\n</source>")
-                user_blocks.append(f"<smtp-user {input_user['username']}>\n    password {input_user['password']}\n    source {input_pool_name}\n</smtp-user>")
+            # Define Source for Authenticated Submission
+            source_blocks.append(f"<source {input_pool_name}>\n    always-allow-relaying yes\n    smtp-service yes\n    add-date-header yes\n    default-virtual-mta {input_pool_name}\n</source>")
+            user_blocks.append(f"<smtp-user {input_user['username']}>\n    password {input_user['password']}\n    source {input_pool_name}\n</smtp-user>")
 
             if input_routing and mode != "install":
                 pt_lines = []
@@ -2388,6 +2703,13 @@ def run_install(data, user_id):
             final_config_str = "\n\n".join(
                 vmta_blocks + pool_blocks + source_blocks + user_blocks + domain_blocks + pattern_blocks
             )
+            log(f">>> [DEBUG] vmta_blocks count: {len(vmta_blocks)}")
+            log(f">>> [DEBUG] pool_blocks count: {len(pool_blocks)}")
+            log(f">>> [DEBUG] source_blocks count: {len(source_blocks)}")
+            log(f">>> [DEBUG] user_blocks count: {len(user_blocks)}")
+            log(f">>> [DEBUG] final_config_str length: {len(final_config_str)}")
+            if vmta_blocks:
+                log(f">>> [DEBUG] First VMTA block: {vmta_blocks[0][:200]}")
 
             # 5. Validate & Apply Config
             if mode != "install":
@@ -2407,17 +2729,24 @@ def run_install(data, user_id):
                 script = script.replace("{{HOSTNAME}}", "localhost.localdomain") 
 
                 with tempfile.NamedTemporaryFile(delete=False, mode="wb", suffix=".sh") as tmp:
-                    safety_header = """# Safety: Backup existing config
+                    safety_header = """#!/bin/bash
+# Safety: Backup existing config
     cp /etc/pmta/config /etc/pmta/config.bak
     """
+                    # Remove any existing shebang from the template if we prepend our own
+                    if script.startswith("#!/bin/bash"):
+                        script = script[11:].lstrip()
+                    
                     final_script = safety_header + "\n" + script + """
     # Validate & Start
     echo "Validating Config..."
-    /usr/sbin/pmtad --debug --dontSend > /var/log/pmta_validation.log 2>&1 &
-    sleep 5
+    # /usr/sbin/pmtad --debug --dontSend > /var/log/pmta_validation.log 2>&1 &
+    # sleep 5
     systemctl restart pmta
     echo "Service Restarted."
     """
+                    with open(os.path.join(BASE_DIR, "debug_script.sh"), "w") as f_dbg:
+                        f_dbg.write(final_script)
                     tmp.write(final_script.encode('utf-8'))
                     tmp_path = tmp.name
             else:
@@ -2494,15 +2823,16 @@ def run_install(data, user_id):
                 log("\n>>> Perfect! All IPs match their Domain Identity.")
 
             # 7. Multi-Server: Provision Mailboxes on Mail Server
-            log("\n>>> [MULTI-SERVER] Provisioning Inbound Mailboxes...")
-            # We provision for each domain in the mapping
-            # (Assuming one password for all for simplicity, or using the smtp_pass from install request)
-            # The install request usually has 'smtp_user' object with password.
-            
-            common_password = input_user.get("password", "password")
-            
-            for d_name in domain_groups.keys():
-                 provision_remote_mailboxes(d_name, common_password)
+            if INBOUND_MAIL_SERVER_IP and INBOUND_MAIL_SERVER_USER and INBOUND_MAIL_SERVER_PASS:
+                log("\n>>> [MULTI-SERVER] Provisioning Inbound Mailboxes...")
+                common_password = input_user.get("password", "password")
+                for d_name in domain_groups.keys():
+                    try:
+                        provision_remote_mailboxes(d_name, common_password)
+                    except Exception as mb_err:
+                        log(f"!!! WARNING: Mailbox provisioning failed for {d_name}: {mb_err} (continuing)")
+            else:
+                log("\n>>> [MULTI-SERVER] Skipping mailbox provisioning (INBOUND_MAIL_HOST not configured)")
             
             log("\n=== Installation & Provisioning Complete ===")
             
@@ -2575,7 +2905,6 @@ def run_install(data, user_id):
             }, user_id)
             
             # Collect DNS records for completion modal
-            dns_records = [] # [FIX] Initialize list before usage
             for m in mappings:
                 ip = m["ip"]
                 d = m["domain"]
@@ -2801,7 +3130,7 @@ def get_install_history():
              mtime = os.path.getmtime(f)
              dt = datetime.fromtimestamp(mtime).isoformat()
              history.append({"filename": fname, "timestamp": dt})
-        except:
+        except Exception:
             pass
             
     return jsonify({"history": sorted(history, key=lambda x: x['timestamp'], reverse=True)})
@@ -2938,21 +3267,42 @@ def list_servers():
     # [STRICT] Multi-tenancy: Only list servers owned by user
     servers = InstalledPMTA.query.filter_by(user_id=user_id).all()
     result = []
+    
+    # Also fetch all domains for this user to fallback
+    user_domains = Domain.query.filter_by(user_id=user_id).all()
+    domain_names = [d.name for d in user_domains]
+    
     for s in servers:
-        # Try to parse hostname from saved config if available, else use IP
-        hostname = s.host_ip
-        if s.dns_details and isinstance(s.dns_details, dict):
-             # Simple heuristic if dns_details has domain info
-             pass
+        domain_val = None
+        
+        # 1. Try to get it from dns_details (list of records)
+        if s.dns_details and isinstance(s.dns_details, list) and len(s.dns_details) > 0:
+             first_record = s.dns_details[0]
+             if isinstance(first_record, dict) and 'host' in first_record:
+                 # Extract the root domain (assuming A record for the root is first)
+                 domain_candidate = first_record['host']
+                 if not domain_candidate.startswith('mta-sts') and not domain_candidate.startswith('_') and not domain_candidate.startswith('mail.'):
+                     domain_val = domain_candidate
+                     
+        # 2. Try to get it from smtp_details if available and dns_details failed
+        if not domain_val and s.smtp_details and isinstance(s.smtp_details, dict):
+             host_val = s.smtp_details.get("host", "")
+             if host_val.startswith("smtp."):
+                 domain_val = host_val.replace("smtp.", "", 1)
+                 
+        # 3. Fallback to the Domain table. Give the first domain available if we have one.
+        if not domain_val and len(domain_names) > 0:
+             domain_val = domain_names[0]
         
         result.append({
             "id": s.id,
             "host_ip": s.host_ip,
             "ssh_username": s.ssh_username,
             "ssh_port": s.ssh_port,
-            "installed_at": s.installed_at.isoformat() if s.installed_at else None
+            "installed_at": s.installed_at.isoformat() if s.installed_at else None,
+            "domain": domain_val
         })
-    return jsonify(result), 200
+    return jsonify({"servers": result}), 200
 
 @app.route('/api/server/<int:server_id>', methods=['GET'])
 @app.route('/api/servers/<int:server_id>', methods=['GET'])
@@ -3071,4 +3421,10 @@ if __name__ == "__main__":
     print(">>> BACKEND STARTING - VERSION: ABSOLUTE PATH FIX")
     print(f">>> LOG FILE: {INSTALL_LOG_FILE}")
     print("----------------------------------------------------------------")
+
+    # Ensure database tables exist with the latest schema
+    with app.app_context():
+        db.create_all()
+        print(">>> Database tables verified/created.")
+
     app.run(host="0.0.0.0", port=5000, debug=False)

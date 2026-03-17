@@ -2584,43 +2584,80 @@ def run_install(data, user_id):
             
             env = os.environ.copy()
             pdns_key = os.getenv('PDNS_API_KEY', 'MyDNSApiKey2026')
+            pdns_host = os.getenv('PDNS_HOST', '192.119.169.12')
+            pdns_port = os.getenv('PDNS_PORT', '8081')
             env["PDNS_API_KEY"] = pdns_key
-            
-            if pdns_key == 'MyDNSApiKey2026':
-                 log(">>> [DNS] Using default PDNS_API_KEY (MyDNSApiKey2026).")
+            env["PDNS_HOST"] = pdns_host
+            env["PDNS_PORT"] = pdns_port
 
+            if pdns_key == 'MyDNSApiKey2026':
+                log(">>> [DNS] Using default PDNS_API_KEY (MyDNSApiKey2026).")
+
+            # [FIX] Pre-check: Verify PowerDNS API is reachable before attempting provisioning
+            pdns_reachable = False
+            try:
+                pdns_check_url = f"http://{pdns_host}:{pdns_port}/api/v1/servers/localhost"
+                pdns_check_resp = requests.get(pdns_check_url, headers={"X-API-Key": pdns_key}, timeout=5)
+                if pdns_check_resp.status_code == 200:
+                    pdns_reachable = True
+                    log(f">>> [DNS] PowerDNS API reachable at {pdns_host}:{pdns_port} (v{pdns_check_resp.json().get('version', '?')})")
+                else:
+                    log(f"!!! [DNS] PowerDNS API responded with HTTP {pdns_check_resp.status_code} at {pdns_host}:{pdns_port}. DNS provisioning will be skipped.")
+            except Exception as pdns_conn_err:
+                log(f"!!! [DNS] PowerDNS API NOT reachable at {pdns_host}:{pdns_port}: {pdns_conn_err}")
+                log(f"!!! [DNS] Ensure the PowerDNS service (pdns) is running on {pdns_host} and port {pdns_port} is open.")
+                log(f"!!! [DNS] DNS records will NOT be provisioned. VMTA configuration will continue.")
 
             for d_name, ips in active_gen_domains.items():
                 log(f">>> [DEBUG] Processing domain: {d_name} with IPs: {ips}")
                 parts = d_name.split('.')
                 root_domain = ".".join(parts[-2:]) if len(parts) > 2 else d_name
-                
+
                 # Retrieve key for DNS provisioning
                 pub_key = dkim_pub_keys.get(d_name, "")
-                
+
                 # Provision Client Sender Identity (SPF/DKIM/DMARC)
-                if pub_key and pdns_key:
+                if pub_key and pdns_key and pdns_reachable:
                     try:
                         cmd_client = [
-                            sys.executable, "pdns_automator.py",
+                            sys.executable, os.path.join(BASE_DIR, "pdns_automator.py"),
                             "--domain", root_domain,
                             "--selector", "default",
                             "--dkim-key", pub_key,
                             "--dmarc-email", f"postmaster@{root_domain}"
                         ]
-                        
+
                         # Pass Inbound IP for Split-Role DNS (MX -> Inbound)
                         inbound_ip = data.get("inbound_ip")
                         if inbound_ip:
-                             cmd_client.extend(["--inbound-ip", inbound_ip])
-                        
+                            cmd_client.extend(["--inbound-ip", inbound_ip])
+
                         for ip in ips:
                             cmd_client.extend(["--ip", ip])
-                            
-                        subprocess.run(cmd_client, capture_output=True, env=env)
-                        log(f">>> [DNS] Provisioned DNS records for {root_domain}")
+
+                        # [FIX] Capture and log subprocess result — previously silent on failure
+                        result = subprocess.run(
+                            cmd_client,
+                            capture_output=True,
+                            text=True,
+                            env=env,
+                            cwd=BASE_DIR  # [FIX] Explicit working dir so pdns_automator.py is always found
+                        )
+                        if result.returncode == 0:
+                            log(f">>> [DNS] Provisioned DNS records for {root_domain}")
+                            if result.stdout.strip():
+                                log(f">>> [DNS] Output: {result.stdout.strip()}")
+                        else:
+                            log(f"!!! [DNS] pdns_automator FAILED for {root_domain} (exit {result.returncode})")
+                            if result.stderr.strip():
+                                log(f"!!! [DNS] STDERR: {result.stderr.strip()}")
+                            if result.stdout.strip():
+                                log(f"!!! [DNS] STDOUT: {result.stdout.strip()}")
+
                     except Exception as dns_err:
                         log(f"!!! WARNING: DNS provisioning failed for {root_domain}: {dns_err} (continuing with VMTA generation)")
+                elif pub_key and not pdns_reachable:
+                    log(f"!!! [DNS] Skipping DNS provisioning for {root_domain} (PowerDNS unreachable — check service status on {pdns_host})")
                 elif pub_key:
                     log(f">>> [DNS] Skipping DNS provisioning for {root_domain} (no PDNS_API_KEY)")
                 
@@ -2868,7 +2905,6 @@ def run_install(data, user_id):
             }, user_id)
             
             # Collect DNS records for completion modal
-            dns_records = [] # [FIX] Initialize list before usage
             for m in mappings:
                 ip = m["ip"]
                 d = m["domain"]
@@ -3231,19 +3267,40 @@ def list_servers():
     # [STRICT] Multi-tenancy: Only list servers owned by user
     servers = InstalledPMTA.query.filter_by(user_id=user_id).all()
     result = []
+    
+    # Also fetch all domains for this user to fallback
+    user_domains = Domain.query.filter_by(user_id=user_id).all()
+    domain_names = [d.name for d in user_domains]
+    
     for s in servers:
-        # Try to parse hostname from saved config if available, else use IP
-        hostname = s.host_ip
-        if s.dns_details and isinstance(s.dns_details, dict):
-             # Simple heuristic if dns_details has domain info
-             pass
+        domain_val = None
+        
+        # 1. Try to get it from dns_details (list of records)
+        if s.dns_details and isinstance(s.dns_details, list) and len(s.dns_details) > 0:
+             first_record = s.dns_details[0]
+             if isinstance(first_record, dict) and 'host' in first_record:
+                 # Extract the root domain (assuming A record for the root is first)
+                 domain_candidate = first_record['host']
+                 if not domain_candidate.startswith('mta-sts') and not domain_candidate.startswith('_') and not domain_candidate.startswith('mail.'):
+                     domain_val = domain_candidate
+                     
+        # 2. Try to get it from smtp_details if available and dns_details failed
+        if not domain_val and s.smtp_details and isinstance(s.smtp_details, dict):
+             host_val = s.smtp_details.get("host", "")
+             if host_val.startswith("smtp."):
+                 domain_val = host_val.replace("smtp.", "", 1)
+                 
+        # 3. Fallback to the Domain table. Give the first domain available if we have one.
+        if not domain_val and len(domain_names) > 0:
+             domain_val = domain_names[0]
         
         result.append({
             "id": s.id,
             "host_ip": s.host_ip,
             "ssh_username": s.ssh_username,
             "ssh_port": s.ssh_port,
-            "installed_at": s.installed_at.isoformat() if s.installed_at else None
+            "installed_at": s.installed_at.isoformat() if s.installed_at else None,
+            "domain": domain_val
         })
     return jsonify({"servers": result}), 200
 
