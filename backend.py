@@ -3273,35 +3273,46 @@ def list_servers():
     domain_names = [d.name for d in user_domains]
     
     for s in servers:
-        domain_val = None
+        domains_for_server = []
         
-        # 1. Try to get it from dns_details (list of records)
-        if s.dns_details and isinstance(s.dns_details, list) and len(s.dns_details) > 0:
-             first_record = s.dns_details[0]
-             if isinstance(first_record, dict) and 'host' in first_record:
-                 # Extract the root domain (assuming A record for the root is first)
-                 domain_candidate = first_record['host']
-                 if not domain_candidate.startswith('mta-sts') and not domain_candidate.startswith('_') and not domain_candidate.startswith('mail.'):
-                     domain_val = domain_candidate
-                     
-        # 2. Try to get it from smtp_details if available and dns_details failed
-        if not domain_val and s.smtp_details and isinstance(s.smtp_details, dict):
-             host_val = s.smtp_details.get("host", "")
-             if host_val.startswith("smtp."):
-                 domain_val = host_val.replace("smtp.", "", 1)
-                 
-        # 3. Fallback to the Domain table. Give the first domain available if we have one.
-        if not domain_val and len(domain_names) > 0:
-             domain_val = domain_names[0]
+        # 1. Primary: dns_details is stored as [{domain: "foo.com", records: [...]}, ...]
+        #    Each entry in the list represents one deployed domain for this server.
+        if s.dns_details and isinstance(s.dns_details, list):
+            for entry in s.dns_details:
+                if isinstance(entry, dict) and entry.get('domain'):
+                    domains_for_server.append(entry['domain'])
         
-        result.append({
-            "id": s.id,
-            "host_ip": s.host_ip,
-            "ssh_username": s.ssh_username,
-            "ssh_port": s.ssh_port,
-            "installed_at": s.installed_at.isoformat() if s.installed_at else None,
-            "domain": domain_val
-        })
+        # 2. Fallback: if dns_details had no domain key, try smtp_details host
+        if not domains_for_server and s.smtp_details and isinstance(s.smtp_details, dict):
+            host_val = s.smtp_details.get("host", "")
+            if host_val and not host_val.replace('.', '').isdigit():  # not a raw IP
+                domains_for_server.append(host_val)
+        
+        # 3. Final fallback: use the Domain table (registered during install)
+        if not domains_for_server:
+            domains_for_server = domain_names[:]
+        
+        # Emit one entry per domain so the frontend dropdown shows all domains
+        for domain_val in domains_for_server:
+            result.append({
+                "id": s.id,
+                "host_ip": s.host_ip,
+                "ssh_username": s.ssh_username,
+                "ssh_port": s.ssh_port,
+                "installed_at": s.installed_at.isoformat() if s.installed_at else None,
+                "domain": domain_val
+            })
+            
+        # If absolutely no domains found for this server, still include it (domain null)
+        if not domains_for_server:
+            result.append({
+                "id": s.id,
+                "host_ip": s.host_ip,
+                "ssh_username": s.ssh_username,
+                "ssh_port": s.ssh_port,
+                "installed_at": s.installed_at.isoformat() if s.installed_at else None,
+                "domain": None
+            })
     return jsonify({"servers": result}), 200
 
 @app.route('/api/server/<int:server_id>', methods=['GET'])
