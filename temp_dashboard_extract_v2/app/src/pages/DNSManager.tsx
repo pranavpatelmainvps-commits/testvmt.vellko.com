@@ -25,11 +25,13 @@ export function DNSManager() {
     const fetchDomains = async () => {
       try {
         const result = await fetchApi<{ servers: InstalledServer[] }>('/api/servers');
-        const domains = Array.from(new Set(
-          (result.servers || [])
-            .map(s => s.domain)
-            .filter(Boolean) as string[]
-        ));
+        // Each server now has a `domains` array (all deployed domains) and a `domain` fallback
+        const allDomains = (result.servers || []).flatMap(s => {
+          if (Array.isArray(s.domains) && s.domains.length > 0) return s.domains;
+          if (s.domain) return [s.domain];
+          return [];
+        });
+        const domains = Array.from(new Set(allDomains.filter(Boolean) as string[]));
         setAvailableDomains(domains);
         if (domains.length > 0) {
           setDomain(domains[0]);

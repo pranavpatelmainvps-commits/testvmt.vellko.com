@@ -3268,10 +3268,6 @@ def list_servers():
     servers = InstalledPMTA.query.filter_by(user_id=user_id).all()
     result = []
     
-    # Also fetch all domains for this user to fallback
-    user_domains = Domain.query.filter_by(user_id=user_id).all()
-    domain_names = [d.name for d in user_domains]
-    
     for s in servers:
         domains_for_server = []
         
@@ -3285,34 +3281,21 @@ def list_servers():
         # 2. Fallback: if dns_details had no domain key, try smtp_details host
         if not domains_for_server and s.smtp_details and isinstance(s.smtp_details, dict):
             host_val = s.smtp_details.get("host", "")
-            if host_val and not host_val.replace('.', '').isdigit():  # not a raw IP
+            if host_val and not host_val.replace('.', '').isdigit():
                 domains_for_server.append(host_val)
         
-        # 3. Final fallback: use the Domain table (registered during install)
-        if not domains_for_server:
-            domains_for_server = domain_names[:]
+        # NOTE: No Domain-table fallback — that would show stale/unrelated domains
         
-        # Emit one entry per domain so the frontend dropdown shows all domains
-        for domain_val in domains_for_server:
-            result.append({
-                "id": s.id,
-                "host_ip": s.host_ip,
-                "ssh_username": s.ssh_username,
-                "ssh_port": s.ssh_port,
-                "installed_at": s.installed_at.isoformat() if s.installed_at else None,
-                "domain": domain_val
-            })
-            
-        # If absolutely no domains found for this server, still include it (domain null)
-        if not domains_for_server:
-            result.append({
-                "id": s.id,
-                "host_ip": s.host_ip,
-                "ssh_username": s.ssh_username,
-                "ssh_port": s.ssh_port,
-                "installed_at": s.installed_at.isoformat() if s.installed_at else None,
-                "domain": None
-            })
+        # Emit ONE entry per server with a 'domains' array + 'domain' (first domain) for compatibility
+        result.append({
+            "id": s.id,
+            "host_ip": s.host_ip,
+            "ssh_username": s.ssh_username,
+            "ssh_port": s.ssh_port,
+            "installed_at": s.installed_at.isoformat() if s.installed_at else None,
+            "domain": domains_for_server[0] if domains_for_server else None,
+            "domains": domains_for_server  # Full list for DNS Manager dropdown
+        })
     return jsonify({"servers": result}), 200
 
 @app.route('/api/server/<int:server_id>', methods=['GET'])
