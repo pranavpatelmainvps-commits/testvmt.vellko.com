@@ -1,0 +1,12 @@
+pmta-dashboard-1  | Traceback (most recent call last):
+pmta-dashboard-1  |   File "/app/backend.py", line 1237, in <module>
+pmta-dashboard-1  |     def test_ssh():
+pmta-dashboard-1  |   File "/usr/local/lib/python3.9/site-packages/flask/sansio/scaffold.py", line 362, in decorator
+pmta-dashboard-1  |     self.add_url_rule(rule, endpoint, f, **options)
+pmta-dashboard-1  |   File "/usr/local/lib/python3.9/site-packages/flask/sansio/scaffold.py", line 47, in wrapper_func
+pmta-dashboard-1  |     return f(self, *args, **kwargs)
+pmta-dashboard-1  |   File "/usr/local/lib/python3.9/site-packages/flask/sansio/app.py", line 657, in add_url_rule
+pmta-dashboard-1  |     raise AssertionError(
+pmta-dashboard-1  | AssertionError: View function mapping is overwriting an existing endpoint function: test_ssh
+
+time="2026-03-20T09:55:46Z" level=warning msg="/opt/pmta-dashboard/docker-compose.dashboard.yml: the attribute `version` is obsolete, it will be ignored, please remove it to avoid potential confusion"
