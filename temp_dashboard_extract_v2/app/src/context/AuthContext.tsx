@@ -37,7 +37,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setUser(newUser);
         localStorage.setItem('token', newToken);
         localStorage.setItem('user', JSON.stringify(newUser));
+        // DEBUG: Remove when no longer needed
+        console.log('[AuthContext] Token saved to localStorage:', newToken);
     };
+
 
     const logout = () => {
         setToken(null);

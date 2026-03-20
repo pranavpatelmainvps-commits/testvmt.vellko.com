@@ -6,8 +6,8 @@ import requests
 import re
 
 # ================= CONFIGURATION =================
-PDNS_HOST = "192.119.169.12" 
-PDNS_PORT = "8081"
+PDNS_HOST = os.environ.get("PDNS_HOST", "192.119.169.12")
+PDNS_PORT = os.environ.get("PDNS_PORT", "8081")
 BASE_URL = f"http://{PDNS_HOST}:{PDNS_PORT}/api/v1/servers/localhost"
 DEFAULT_TTL = 300
 

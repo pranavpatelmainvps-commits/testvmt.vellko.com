@@ -596,19 +596,47 @@ def change_password():
 @jwt_required()
 def get_all_users():
     claims = get_jwt()
-    if claims.get('role') != 'admin':
-        return jsonify({"error": "Admin access required"}), 403
+    if claims.get('role') not in ["admin", "super_admin"]:
+        return jsonify({"error": "Unauthorized"}), 403
     
     users = User.query.all()
-    return jsonify({
-        "users": [{
-            "id": u.id,
-            "name": u.name,
-            "email": u.email,
-            "role": u.role,
-            "created_at": u.created_at.isoformat()
-        } for u in users]
-    })
+    return jsonify([{
+        "id": u.id,
+        "email": u.email,
+        "plan": getattr(u, "plan", None),
+        "server_limit": getattr(u, "server_limit", None),
+        "is_active": getattr(u, "is_active", True),
+    } for u in users])
+
+
+@app.route("/api/admin/user/toggle-status", methods=["POST"])
+@jwt_required()
+def toggle_user_status():
+    claims = get_jwt()
+    if claims.get('role') not in ["admin", "super_admin"]:
+        return jsonify({"error": "Unauthorized"}), 403
+
+    data = request.json or {}
+    target_user_id = data.get("user_id")
+    is_active = data.get("is_active")
+
+    if target_user_id is None or is_active is None:
+        return jsonify({"success": False, "message": "Missing user_id or is_active"}), 400
+
+    current_user_id = get_jwt_identity()
+    try:
+        if int(target_user_id) == int(current_user_id) and (is_active is False or str(is_active).lower() == "false"):
+            return jsonify({"success": False, "message": "Cannot deactivate your own account"}), 400
+    except Exception:
+        pass
+
+    user = User.query.get(target_user_id)
+    if not user:
+        return jsonify({"success": False, "message": "User not found"}), 404
+
+    user.is_active = bool(is_active)
+    db.session.commit()
+    return jsonify({"success": True, "message": "User status updated"})
 
 @app.route("/api/admin/users/<int:user_id>", methods=["PUT"])
 @jwt_required()
@@ -836,12 +864,92 @@ def save_config():
 
 
 
+@app.route("/api/server/test-ssh", methods=["POST"])
+@jwt_required()
+def test_ssh():
+    data = request.json or {}
+    host = data.get("host")
+    username = data.get("username")
+    password = data.get("password")
+    port = data.get("port", 22)
+
+    if not host or not username or password is None:
+        return jsonify({
+            "success": False,
+            "os": None,
+            "pmta_installed": False,
+            "ports_in_use": [],
+            "ram_mb": None,
+            "disk_available": None,
+            "errors": ["Missing required fields: host, username, password"],
+        })
+
+    try:
+        port = int(port) if port is not None else 22
+    except Exception:
+        port = 22
+
+    from ssh_validator import validate_ssh_server
+
+    result = validate_ssh_server(
+        host=str(host).strip(),
+        username=str(username),
+        password=str(password),
+        port=port,
+        timeout_seconds=10,
+    )
+    return jsonify(result)
+
+
 @app.route("/install", methods=["POST"])
 @jwt_required()
 def install_pmta():
     user_id = get_jwt_identity()
     data = request.json
     # Debug print removed
+    server_ip = (data or {}).get("server_ip")
+    existing_server_for_limit = None
+    if server_ip:
+        existing_server_for_limit = InstalledPMTA.query.filter_by(
+            host_ip=server_ip,
+            user_id=user_id
+        ).first()
+
+    # Plan limit check (allow retry on existing server IP)
+    if not existing_server_for_limit:
+        try:
+            user = User.query.get(user_id)
+            limit = getattr(user, "server_limit", None) if user else None
+            if limit is not None:
+                total_servers = InstalledPMTA.query.filter_by(user_id=user_id).count()
+                if total_servers >= int(limit):
+                    return jsonify({
+                        "success": False,
+                        "message": "Server limit reached. Upgrade your plan."
+                    }), 403
+        except Exception:
+            pass
+
+    server_ip_for_lock = (data or {}).get("server_ip")
+    if server_ip_for_lock:
+        existing_lock = InstallJob.query.filter(
+            InstallJob.user_id == user_id,
+            InstallJob.server_ip == server_ip_for_lock,
+            InstallJob.status.in_([JobStatus.PENDING, JobStatus.RUNNING, JobStatus.RETRYING]),
+        ).order_by(InstallJob.created_at.desc()).first()
+        if existing_lock:
+            return jsonify({"success": False, "message": "Deployment already in progress"}), 409
+    
+    server = InstalledPMTA.query.filter_by(
+        host_ip=data.get("server_ip"),
+        user_id=user_id
+    ).first()
+    if server and getattr(server, "status", None) == "deploying":
+        return jsonify({
+            "success": False,
+            "message": "Deployment already in progress"
+        }), 409
+
     # Save status immediately so UI updates instantly upon reload
     # [FIX] Save credentials ensuring they are available for other endpoints
     initial_status = {
@@ -881,6 +989,13 @@ def install_pmta():
             print(f"Created DB record {new_server.id} for installation.")
     except Exception as e:
         print(f"Error creating/updating DB record: {e}")
+    
+    if server:
+        try:
+            server.status = "deploying"
+            db.session.commit()
+        except Exception:
+            pass
 
     # [FIX] Clear log file synchronously BEFORE background task starts
     log_file_path = get_log_file(user_id)
@@ -914,7 +1029,19 @@ def install_pmta():
         # FALLBACK — Celery unavailable, use original threading
         print(f"Celery enqueue failed ({celery_exc}), falling back to sync install")
 
-    threading.Thread(target=run_install, args=(data, user_id)).start()
+    job = InstallJob(
+        job_id=str(uuid.uuid4()),
+        user_id=user_id,
+        server_ip=data.get("server_ip"),
+        mode=data.get("mode", "install"),
+        status=JobStatus.RUNNING,
+        started_at=datetime.utcnow(),
+        payload=data,
+    )
+    db.session.add(job)
+    db.session.commit()
+
+    threading.Thread(target=run_install, args=(data, user_id, job.id)).start()
     return jsonify({"status": "started", "message": "Installation started"})
 
 @app.route("/api/jobs/<job_id>", methods=["GET"])
@@ -1981,7 +2108,7 @@ def expand_ips(ip_str):
         with open("debug_expand.log", "a") as f: f.write(f"Single IP Error: {e}\n")
         return []
 
-def run_install(data, user_id):
+def run_install(data, user_id, job_db_id=None):
     # Debug print removed
     
     server_ip = data["server_ip"]
@@ -1990,6 +2117,7 @@ def run_install(data, user_id):
     ssh_port = int(data.get("ssh_port", 22))
     raw_mappings = data.get("mappings", [])
     fresh_install = data.get("fresh_install", False)
+    install_ok = False
 
     # 1. Expand Mappings (Ranges/CIDRs to Individual IP objects)
     mappings = []
@@ -2944,6 +3072,7 @@ def run_install(data, user_id):
             log(">>> [CLEANUP] Cleanup complete.")
 
             update_progress("complete", "success", f"Installation completed successfully! {len(deployed_domains)} domain(s) deployed.")
+            install_ok = True
 
         except Exception as e:
             log(f"!!! Installation Failed: {e}")
@@ -2970,6 +3099,31 @@ def run_install(data, user_id):
         }, user_id)
 
     finally:
+        if job_db_id:
+            try:
+                with app.app_context():
+                    job = InstallJob.query.get(job_db_id)
+                    if job:
+                        job.status = JobStatus.SUCCESS if install_ok else JobStatus.FAILED
+                        job.completed_at = datetime.utcnow()
+                        if not job.started_at:
+                            job.started_at = datetime.utcnow()
+                        db.session.commit()
+            except Exception:
+                pass
+        
+        try:
+            with app.app_context():
+                server = InstalledPMTA.query.filter_by(
+                    host_ip=server_ip,
+                    user_id=user_id
+                ).first()
+                if server:
+                    server.status = "active" if install_ok else "failed"
+                    db.session.commit()
+        except Exception:
+            pass
+
         # 2. REVERT PASSWORD
         log(">>> [SECURITY] Reverting Server Password...")
         # STABILITY MODE: Check if rotation actually happened
@@ -2995,6 +3149,50 @@ def get_install_logs():
         except Exception:
              return jsonify({"logs": "Error reading log file"})
     return jsonify({"logs": ""})
+
+
+@app.route("/api/logs", methods=["GET"])
+@jwt_required()
+def get_realtime_logs():
+    user_id = get_jwt_identity()
+    try:
+        offset = int(request.args.get("offset", 0))
+    except Exception:
+        offset = 0
+    if offset < 0:
+        offset = 0
+
+    log_file_path = get_log_file(user_id)
+    if not os.path.exists(log_file_path):
+        return jsonify({"logs": [], "next_offset": offset})
+
+    max_read_bytes = 200_000
+    logs = []
+    next_offset = offset
+
+    try:
+        with open(log_file_path, "rb") as f:
+            f.seek(offset, os.SEEK_SET)
+            chunk = f.read(max_read_bytes)
+            if not chunk:
+                return jsonify({"logs": [], "next_offset": offset})
+
+            # Avoid returning a partial last line when truncated mid-line
+            if len(chunk) == max_read_bytes and not chunk.endswith(b"\n"):
+                tail = f.readline()
+                if tail:
+                    chunk += tail
+
+            next_offset = offset + len(chunk)
+
+        text = chunk.decode("utf-8", errors="replace")
+        logs = [ln for ln in text.splitlines() if ln != ""]
+    except Exception:
+        logs = []
+        next_offset = offset
+
+    return jsonify({"logs": logs, "next_offset": next_offset})
+
 
 @app.route("/api/dns/records", methods=["GET"])
 @app.route("/dns/records", methods=["GET"]) # Legacy alias

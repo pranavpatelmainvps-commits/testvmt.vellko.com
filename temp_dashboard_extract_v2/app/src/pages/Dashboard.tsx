@@ -9,6 +9,7 @@ import {
   Copy
 } from 'lucide-react';
 import { useLogStream } from '@/hooks/useApi';
+import { fetchApi } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -209,10 +210,9 @@ export function Dashboard() {
 
 
   useEffect(() => {
-    // Poll for status
+    // Poll for status (using fetchApi for JWT auth)
     const fetchStatus = () => {
-      fetch('/api/status')
-        .then(res => res.json())
+      fetchApi<SystemStatus>('/api/status')
         .then(data => setSystemStatus(data))
         .catch(err => console.error('Failed to fetch status:', err));
     };
@@ -249,12 +249,7 @@ export function Dashboard() {
     return () => clearInterval(interval);
   }, []);
 
-  useEffect(() => {
-    fetch('/api/status')
-      .then(res => res.json())
-      .then(data => setSystemStatus(data))
-      .catch(err => console.error('Failed to fetch status:', err));
-  }, []);
+
 
   return (
     <motion.div

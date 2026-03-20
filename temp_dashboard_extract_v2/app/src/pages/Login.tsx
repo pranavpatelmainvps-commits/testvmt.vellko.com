@@ -53,7 +53,15 @@ export function Login({ onSwitchToRegister }: LoginProps) {
                 return;
             }
 
-            login(data.token, data.user);
+            // Detect token from multiple possible response formats
+            const token = data.token || data.access_token || data?.data?.token || null;
+            if (!token) {
+                console.error('[Login] Login response missing token. Full response:', data);
+                throw new Error('Login failed: no token received from server');
+            }
+            console.log('[Login] Saved token:', token);
+            login(token, data.user);
+
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Something went wrong');
         } finally {

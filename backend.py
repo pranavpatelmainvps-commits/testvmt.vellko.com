@@ -64,11 +64,19 @@ app = Flask(__name__, static_folder='static/assets', template_folder='static', s
 CORS(app) # Enable CORS for frontend
 
 # Configuration - Loaded from Environment Variables
+# Configuration - Loaded from Environment Variables
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY') or secrets.token_hex(16)
 app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URI', 'sqlite:///users.db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY') or secrets.token_hex(16)
+
+# Safe JWT Secret Fallback for local development
+_jwt_secret = os.getenv('JWT_SECRET_KEY', 'dev-fallback-secret-do-not-use-in-prod-2026')
+if _jwt_secret == 'dev-fallback-secret-do-not-use-in-prod-2026':
+    print("[WARNING] JWT_SECRET_KEY not set. Using insecure fallback.")
+
+app.config['JWT_SECRET_KEY'] = _jwt_secret
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(days=1)
+
 
 # Mail Configuration (Mailbaby)
 app.config['MAIL_SERVER'] = os.getenv('MAIL_SERVER', 'smtp.mailbaby.net')
@@ -95,14 +103,109 @@ migrate = Migrate(app, db) # Initialize Flask-Migrate
 bcrypt = Bcrypt(app)
 jwt = JWTManager(app)
 
+@jwt.user_lookup_loader
+def user_lookup_callback(_jwt_header, jwt_data):
+    """
+    Called automatically by Flask-JWT-Extended for every @jwt_required() request.
+    Returns the user object (enables current_user) or None to block the request.
+    Inactive users are blocked here — applies to ALL protected endpoints.
+    """
+    identity = jwt_data.get("sub")
+    if identity is None:
+        return None
+    try:
+        user = User.query.get(int(identity))
+        if user is None:
+            return None
+        if not getattr(user, "is_active", True):
+            # Return None → Flask-JWT-Extended will raise 401; our global handler returns JSON
+            # We raise a more specific Flask abort so the 403 handler fires instead
+            from flask import abort
+            abort(403, description="Account disabled. Contact admin.")
+        return user
+    except Exception:
+        return None
+
 # Initialize Rate Limiter
+# Per-user rate limit key: JWT identity when available, IP as fallback
+def _rate_limit_key():
+    try:
+        from flask_jwt_extended import get_jwt_identity, verify_jwt_in_request
+        verify_jwt_in_request(optional=True)
+        identity = get_jwt_identity()
+        if identity:
+            return f"user:{identity}"
+    except Exception:
+        pass
+    return get_remote_address()
+
 limiter = Limiter(
-    get_remote_address,
+    key_func=_rate_limit_key,
     app=app,
-   # default_limits=["200 per day", "50 per hour"],
     storage_uri="memory://"
 )
 
+# ---------------------------------------------------------------------------
+# Global Error Handlers — consistent JSON, no raw tracebacks
+# ---------------------------------------------------------------------------
+import logging as _logging
+import traceback as _traceback
+
+@app.errorhandler(400)
+def handle_400(e):
+    _logging.warning("400 Bad Request: %s", e)
+    return jsonify({"success": False, "message": "Bad request"}), 400
+
+@app.errorhandler(403)
+def handle_403(e):
+    _logging.warning("403 Forbidden: %s", e)
+    return jsonify({"success": False, "message": "Unauthorized"}), 403
+
+@app.errorhandler(404)
+def handle_404(e):
+    _logging.warning("404 Not Found: %s", e)
+    return jsonify({"success": False, "message": "Not found"}), 404
+
+@app.errorhandler(405)
+def handle_405(e):
+    _logging.warning("405 Method Not Allowed: %s", e)
+    return jsonify({"success": False, "message": "Method not allowed"}), 405
+
+@app.errorhandler(429)
+def handle_429(e):
+    _logging.warning("429 Rate Limit: %s", e)
+    return jsonify({"success": False, "message": "Too many requests. Please try again later."}), 429
+
+@app.errorhandler(Exception)
+def handle_unhandled_exception(e):
+    # Log full traceback internally — never exposed to client
+    _logging.error("Unhandled exception: %s\n%s", str(e), _traceback.format_exc())
+    print(f"[ERROR] Unhandled exception: {e}\n{_traceback.format_exc()}")
+    return jsonify({"success": False, "message": "Internal server error"}), 500
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Active User Enforcement — blocks disabled accounts on all JWT-protected routes
+# ---------------------------------------------------------------------------
+def require_active_user():
+    """
+    Call at the top of any @jwt_required() route to block inactive users.
+    Returns a Flask response tuple (response, 403) if user is inactive, otherwise None.
+    Lightweight: single DB lookup, safe getattr for is_active.
+    """
+    from flask_jwt_extended import get_jwt_identity
+    user_id = get_jwt_identity()
+    if user_id is None:
+        return None  # JWT layer handles missing token
+    user = User.query.get(int(user_id))
+    if user is None:
+        return jsonify({"success": False, "message": "User not found"}), 403
+    if not getattr(user, "is_active", True):
+        _logging.warning("Blocked inactive user id=%s", user_id)
+        return jsonify({"success": False, "message": "Account disabled. Contact admin."}), 403
+    return None  # User is active, proceed
+
+# ---------------------------------------------------------------------------
 # --- Database Models ---
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -122,6 +225,13 @@ class User(db.Model):
     totp_secret = db.Column(db.String(32), nullable=True)
     totp_enabled = db.Column(db.Boolean, default=False)
 
+    # Account Status
+    is_active = db.Column(db.Boolean, default=True)
+
+    # Subscription / Billing
+    plan = db.Column(db.String(50), nullable=True, default=None)           # e.g. 'free', 'pro'
+    subscription_expires_at = db.Column(db.DateTime, nullable=True, default=None)  # None = no expiry
+
     def set_password(self, password):
         self.password_hash = bcrypt.generate_password_hash(password).decode('utf-8')
 
@@ -132,7 +242,40 @@ class Domain(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), unique=True, nullable=False)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-    
+
+class UserUsage(db.Model):
+    """Lightweight per-user usage tracking for billing/analytics."""
+    __tablename__ = 'user_usage'
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), unique=True, nullable=False)
+    total_deployments = db.Column(db.Integer, default=0, nullable=False)
+    total_ssh_tests = db.Column(db.Integer, default=0, nullable=False)
+    last_activity_at = db.Column(db.DateTime, nullable=True)
+
+# ---------------------------------------------------------------------------
+# Usage Tracking Helper — fire-and-forget, never crashes the request
+# ---------------------------------------------------------------------------
+def _track_usage(user_id, deployment=False, ssh_test=False):
+    """Increment usage counters for a user. Silent on any error."""
+    try:
+        record = UserUsage.query.filter_by(user_id=int(user_id)).first()
+        if not record:
+            record = UserUsage(user_id=int(user_id), total_deployments=0, total_ssh_tests=0)
+            db.session.add(record)
+        if deployment:
+            record.total_deployments = (record.total_deployments or 0) + 1
+        if ssh_test:
+            record.total_ssh_tests = (record.total_ssh_tests or 0) + 1
+        record.last_activity_at = datetime.utcnow()
+        db.session.commit()
+    except Exception as _te:
+        _logging.warning("[_track_usage] Failed to update usage for user %s: %s", user_id, _te)
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
+# ---------------------------------------------------------------------------
+
 class InboundEmail(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
@@ -189,6 +332,23 @@ with app.app_context():
     db.create_all()
 
 # --- Helper Functions ---
+
+def is_subscription_active(user):
+    """
+    Returns True if the user's subscription allows deployment.
+    - admin / super_admin: always True (never blocked)
+    - No expiry set (None): True by default
+    - Expiry in the future: True
+    - Expiry in the past: False
+    """
+    role = getattr(user, "role", "user")
+    if role in ("admin", "super_admin"):
+        return True
+    expiry = getattr(user, "subscription_expires_at", None)
+    if expiry is None:
+        return True
+    return expiry > datetime.utcnow()
+
 def send_email(to_email, subject, html_body):
     """Sends email using Mailbaby SMTP"""
     sender_email = app.config['MAIL_FROM']
@@ -471,6 +631,20 @@ def status_2fa():
         return jsonify({"error": "User not found"}), 404
     return jsonify({"enabled": user.totp_enabled})
 
+@app.route("/api/health", methods=["GET"])
+def health_check():
+    """Simple health check endpoint for frontend and Docker"""
+    health = {"status": "ok"}
+    try:
+        # Quick DB query to prove connection works
+        db.session.execute(db.text('SELECT 1'))
+        health["db"] = "connected"
+    except Exception as e:
+        health["db"] = "disconnected"
+        health["error"] = str(e)
+        return jsonify(health), 503
+    return jsonify(health)
+
 @app.route("/api/auth/verify", methods=["GET", "POST"])
 def verify_email():
     # Supports GET via link or POST
@@ -596,19 +770,51 @@ def change_password():
 @jwt_required()
 def get_all_users():
     claims = get_jwt()
-    if claims.get('role') != 'admin':
-        return jsonify({"error": "Admin access required"}), 403
+    if claims.get('role') not in ["admin", "super_admin"]:
+        return jsonify({"error": "Unauthorized"}), 403
     
     users = User.query.all()
-    return jsonify({
-        "users": [{
-            "id": u.id,
-            "name": u.name,
-            "email": u.email,
-            "role": u.role,
-            "created_at": u.created_at.isoformat()
-        } for u in users]
-    })
+    return jsonify([{
+        "id": u.id,
+        "email": u.email,
+        "name": getattr(u, "name", None),
+        "role": getattr(u, "role", "user"),
+        "plan": getattr(u, "plan", None),
+        "server_limit": getattr(u, "server_limit", None),
+        "is_active": getattr(u, "is_active", True),
+        "is_verified": getattr(u, "is_verified", False),
+        "created_at": getattr(u, "created_at", None).isoformat() if getattr(u, "created_at", None) else None,
+    } for u in users])
+
+
+@app.route("/api/admin/user/toggle-status", methods=["POST"])
+@jwt_required()
+def toggle_user_status():
+    claims = get_jwt()
+    if claims.get('role') not in ["admin", "super_admin"]:
+        return jsonify({"error": "Unauthorized"}), 403
+
+    data = request.json or {}
+    target_user_id = data.get("user_id")
+    is_active = data.get("is_active")
+
+    if target_user_id is None or is_active is None:
+        return jsonify({"success": False, "message": "Missing user_id or is_active"}), 400
+
+    current_user_id = get_jwt_identity()
+    try:
+        if int(target_user_id) == int(current_user_id) and (is_active is False or str(is_active).lower() == "false"):
+            return jsonify({"success": False, "message": "Cannot deactivate your own account"}), 400
+    except Exception:
+        pass
+
+    user = User.query.get(target_user_id)
+    if not user:
+        return jsonify({"success": False, "message": "User not found"}), 404
+
+    user.is_active = bool(is_active)
+    db.session.commit()
+    return jsonify({"success": True, "message": "User status updated"})
 
 @app.route("/api/admin/users/<int:user_id>", methods=["PUT"])
 @jwt_required()
@@ -634,6 +840,8 @@ def update_user(user_id):
         user.role = data['role']
     if 'password' in data and data['password']:
         user.password_hash = bcrypt.generate_password_hash(data['password']).decode('utf-8')
+    if 'is_verified' in data:
+        user.is_verified = bool(data['is_verified'])
     
     db.session.commit()
     return jsonify({"message": "User updated successfully"})
@@ -661,6 +869,158 @@ def delete_user(user_id):
     db.session.delete(user)
     db.session.commit()
     return jsonify({"message": "User deleted successfully"})
+
+
+@app.route("/api/admin/analytics", methods=["GET"])
+@jwt_required()
+def admin_analytics():
+    claims = get_jwt()
+    if claims.get("role") not in ["admin", "super_admin"]:
+        return jsonify({"success": False, "message": "Unauthorized"}), 403
+    try:
+        from sqlalchemy import func
+        total_users   = db.session.query(func.count(User.id)).scalar() or 0
+        active_users  = db.session.query(func.count(User.id)).filter(
+            User.is_active == True  # noqa: E712
+        ).scalar() or 0
+        total_servers = db.session.query(func.count(InstalledPMTA.id)).scalar() or 0
+        total_deployments = db.session.query(
+            func.coalesce(func.sum(UserUsage.total_deployments), 0)
+        ).scalar() or 0
+        total_ssh_tests = db.session.query(
+            func.coalesce(func.sum(UserUsage.total_ssh_tests), 0)
+        ).scalar() or 0
+        return jsonify({
+            "success": True,
+            "total_users": total_users,
+            "active_users": active_users,
+            "total_servers": total_servers,
+            "total_deployments": int(total_deployments),
+            "total_ssh_tests": int(total_ssh_tests),
+        })
+    except Exception as e:
+        _logging.error("[/api/admin/analytics] %s", str(e))
+        return jsonify({"success": False, "message": "Failed to fetch analytics"}), 500
+
+
+# ============= PAYMENT ENDPOINTS =============
+
+# Plan pricing in paise (1 INR = 100 paise)
+_PLAN_PRICING = {
+    "basic":      99900,   # ₹999
+    "pro":       199900,   # ₹1999
+    "enterprise": 499900,  # ₹4999
+}
+
+@app.route("/api/payment/create-order", methods=["POST"])
+@jwt_required()
+def create_payment_order():
+    try:
+        import razorpay
+    except ImportError:
+        _logging.error("[/api/payment/create-order] razorpay package not installed")
+        return jsonify({"success": False, "message": "Payment service unavailable"}), 503
+
+    data = request.json or {}
+    plan = str(data.get("plan", "")).strip().lower()
+
+    if plan not in _PLAN_PRICING:
+        return jsonify({
+            "success": False,
+            "message": f"Invalid plan. Valid plans: {', '.join(_PLAN_PRICING.keys())}"
+        }), 400
+
+    razorpay_key_id     = os.environ.get("RAZORPAY_KEY_ID", "")
+    razorpay_key_secret = os.environ.get("RAZORPAY_KEY_SECRET", "")
+
+    if not razorpay_key_id or not razorpay_key_secret:
+        _logging.error("[/api/payment/create-order] Razorpay credentials not configured")
+        return jsonify({"success": False, "message": "Payment service not configured"}), 503
+
+    try:
+        client = razorpay.Client(auth=(razorpay_key_id, razorpay_key_secret))
+        amount = _PLAN_PRICING[plan]
+        order = client.order.create({
+            "amount":   amount,
+            "currency": "INR",
+            "payment_capture": 1,
+            "notes": {
+                "plan":    plan,
+                "user_id": str(get_jwt_identity()),
+            }
+        })
+        return jsonify({
+            "success":  True,
+            "order_id": order["id"],
+            "amount":   amount,
+            "currency": "INR",
+            "plan":     plan,
+            "key":      razorpay_key_id,
+        })
+    except Exception as e:
+        _logging.error("[/api/payment/create-order] Razorpay error: %s", str(e))
+        return jsonify({"success": False, "message": "Failed to create payment order"}), 500
+
+
+@app.route("/api/payment/verify", methods=["POST"])
+@jwt_required()
+def verify_payment():
+    try:
+        import razorpay
+        import hmac as _hmac
+        import hashlib as _hashlib
+    except ImportError:
+        return jsonify({"success": False, "message": "Payment service unavailable"}), 503
+
+    data = request.json or {}
+    order_id   = data.get("razorpay_order_id", "")
+    payment_id = data.get("razorpay_payment_id", "")
+    signature  = data.get("razorpay_signature", "")
+    plan       = str(data.get("plan", "")).strip().lower()
+
+    if not order_id or not payment_id or not signature or not plan:
+        return jsonify({"success": False, "message": "Missing required payment fields"}), 400
+
+    if plan not in _PLAN_PRICING:
+        return jsonify({"success": False, "message": "Invalid plan"}), 400
+
+    razorpay_key_id     = os.environ.get("RAZORPAY_KEY_ID", "")
+    razorpay_key_secret = os.environ.get("RAZORPAY_KEY_SECRET", "")
+
+    if not razorpay_key_id or not razorpay_key_secret:
+        return jsonify({"success": False, "message": "Payment service not configured"}), 503
+
+    # Signature verification — never trust frontend blindly
+    try:
+        client = razorpay.Client(auth=(razorpay_key_id, razorpay_key_secret))
+        client.utility.verify_payment_signature({
+            "razorpay_order_id":   order_id,
+            "razorpay_payment_id": payment_id,
+            "razorpay_signature":  signature,
+        })
+    except Exception:
+        _logging.warning("[/api/payment/verify] Signature verification failed for order=%s", order_id)
+        return jsonify({"success": False, "message": "Payment verification failed"}), 400
+
+    # Signature valid — activate plan
+    try:
+        user_id = get_jwt_identity()
+        user = User.query.get(int(user_id))
+        if not user:
+            return jsonify({"success": False, "message": "User not found"}), 404
+
+        user.plan = plan
+        user.subscription_expires_at = datetime.utcnow() + timedelta(days=30)
+        db.session.commit()
+        _logging.info("[/api/payment/verify] Plan '%s' activated for user_id=%s", plan, user_id)
+        return jsonify({"success": True, "message": "Payment successful. Plan activated."})
+    except Exception as e:
+        _logging.error("[/api/payment/verify] DB error: %s", str(e))
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
+        return jsonify({"success": False, "message": "Failed to activate plan"}), 500
 
 
 RECEIVED_EMAILS = []
@@ -836,12 +1196,117 @@ def save_config():
 
 
 
+@app.route("/api/server/test-ssh", methods=["POST"])
+@jwt_required()
+def test_ssh():
+    data = request.json or {}
+    host = data.get("host")
+    username = data.get("username")
+    password = data.get("password")
+    port = data.get("port", 22)
+
+    if not host or not username or password is None:
+        return jsonify({
+            "success": False,
+            "os": None,
+            "pmta_installed": False,
+            "ports_in_use": [],
+            "ram_mb": None,
+            "disk_available": None,
+            "errors": ["Missing required fields: host, username, password"],
+        })
+
+    try:
+        port = int(port) if port is not None else 22
+    except Exception:
+        port = 22
+
+    from ssh_validator import validate_ssh_server
+
+    result = validate_ssh_server(
+        host=str(host).strip(),
+        username=str(username),
+        password=str(password),
+        port=port,
+        timeout_seconds=10,
+    )
+    return jsonify(result)
+
+
 @app.route("/install", methods=["POST"])
 @jwt_required()
+@limiter.limit("3 per minute")
 def install_pmta():
+    try:
+        return _install_pmta_inner()
+    except Exception as e:
+        _logging.error("[/install] Unhandled exception: %s\n%s", str(e), _traceback.format_exc())
+        print(f"[ERROR][/install] {e}")
+        return jsonify({"success": False, "message": "Internal server error during installation"}), 500
+
+def _install_pmta_inner():
+    from flask_jwt_extended import get_jwt_identity
+    blocked = require_active_user()
+    if blocked:
+        return blocked
     user_id = get_jwt_identity()
+    # Subscription gate — admins bypass, missing expiry = active
+    try:
+        _install_user = User.query.get(int(user_id))
+        if _install_user and not is_subscription_active(_install_user):
+            return jsonify({"success": False, "message": "Subscription expired. Please renew."}), 403
+    except Exception as _se:
+        _logging.warning("[/install] Subscription check failed: %s", _se)
     data = request.json
+    # Track deployment attempt (non-blocking)
+    try:
+        _track_usage(user_id, deployment=True)
+    except Exception:
+        pass
     # Debug print removed
+    server_ip = (data or {}).get("server_ip")
+    existing_server_for_limit = None
+    if server_ip:
+        existing_server_for_limit = InstalledPMTA.query.filter_by(
+            host_ip=server_ip,
+            user_id=user_id
+        ).first()
+
+    # Plan limit check (allow retry on existing server IP)
+    if not existing_server_for_limit:
+        try:
+            user = User.query.get(user_id)
+            limit = getattr(user, "server_limit", None) if user else None
+            if limit is not None:
+                total_servers = InstalledPMTA.query.filter_by(user_id=user_id).count()
+                if total_servers >= int(limit):
+                    return jsonify({
+                        "success": False,
+                        "message": "Server limit reached. Upgrade your plan."
+                    }), 403
+        except Exception:
+            pass
+
+    server_ip_for_lock = (data or {}).get("server_ip")
+    if server_ip_for_lock:
+        existing_lock = InstallJob.query.filter(
+            InstallJob.user_id == user_id,
+            InstallJob.server_ip == server_ip_for_lock,
+            InstallJob.status.in_([JobStatus.PENDING, JobStatus.RUNNING, JobStatus.RETRYING]),
+        ).order_by(InstallJob.created_at.desc()).first()
+        if existing_lock:
+            return jsonify({"success": False, "message": "Deployment already in progress"}), 409
+    
+    server = InstalledPMTA.query.filter_by(
+        host_ip=data.get("server_ip"),
+        user_id=user_id
+    ).first()
+    if server and getattr(server, "status", None) == "deploying":
+        return jsonify({
+            "success": False,
+            "message": "Deployment already in progress"
+        }), 409
+
     # Save status immediately so UI updates instantly upon reload
     # [FIX] Save credentials ensuring they are available for other endpoints
     initial_status = {
@@ -881,6 +1346,13 @@ def install_pmta():
             print(f"Created DB record {new_server.id} for installation.")
     except Exception as e:
         print(f"Error creating/updating DB record: {e}")
+    
+    if server:
+        try:
+            server.status = "deploying"
+            db.session.commit()
+        except Exception:
+            pass
 
     # [FIX] Clear log file synchronously BEFORE background task starts
     log_file_path = get_log_file(user_id)
@@ -914,7 +1386,19 @@ def install_pmta():
         # FALLBACK — Celery unavailable, use original threading
         print(f"Celery enqueue failed ({celery_exc}), falling back to sync install")
 
-    threading.Thread(target=run_install, args=(data, user_id)).start()
+    job = InstallJob(
+        job_id=str(uuid.uuid4()),
+        user_id=user_id,
+        server_ip=data.get("server_ip"),
+        mode=data.get("mode", "install"),
+        status=JobStatus.RUNNING,
+        started_at=datetime.utcnow(),
+        payload=data,
+    )
+    db.session.add(job)
+    db.session.commit()
+
+    threading.Thread(target=run_install, args=(data, user_id, job.id)).start()
     return jsonify({"status": "started", "message": "Installation started"})
 
 @app.route("/api/jobs/<job_id>", methods=["GET"])
@@ -942,19 +1426,27 @@ def get_job_status(job_id):
     })
 
 @app.route("/api/status", methods=["GET"])
-@jwt_required()
+@jwt_required(optional=True)
 def get_system_status():
     user_id = get_jwt_identity()
+    # DEBUG: Remove when no longer needed
+    print("[/api/status] JWT identity:", user_id)
+
+    if not user_id:
+        return jsonify({"success": False, "message": "Unauthorized"}), 401
+
     status_file = get_status_file(user_id)
-    
+
     if os.path.exists(status_file):
         try:
             import json
             with open(status_file, "r") as f:
                 return jsonify(json.load(f))
         except Exception as e:
+            _logging.error("[/api/status] Failed to read status file: %s", str(e))
             return jsonify({"error": str(e)}), 500
     return jsonify({"status": "not_installed"})
+
 
 @app.route("/api/install/progress", methods=["GET"])
 @limiter.limit("120 per minute") # Allow frequent polling
@@ -1981,7 +2473,7 @@ def expand_ips(ip_str):
         with open("debug_expand.log", "a") as f: f.write(f"Single IP Error: {e}\n")
         return []
 
-def run_install(data, user_id):
+def run_install(data, user_id, job_db_id=None):
     # Debug print removed
     
     server_ip = data["server_ip"]
@@ -1990,6 +2482,7 @@ def run_install(data, user_id):
     ssh_port = int(data.get("ssh_port", 22))
     raw_mappings = data.get("mappings", [])
     fresh_install = data.get("fresh_install", False)
+    install_ok = False
 
     # 1. Expand Mappings (Ranges/CIDRs to Individual IP objects)
     mappings = []
@@ -2837,6 +3330,37 @@ def run_install(data, user_id):
             log("\n=== Installation & Provisioning Complete ===")
             
             # Save Status for Dashboard
+            # Collect DNS records for DB and completion modal
+            dns_records = []
+            deployed_domains = []
+            for m in mappings:
+                ip = m["ip"]
+                d = m["domain"]
+                parts = d.split('.')
+                root_d = ".".join(parts[-2:]) if len(parts) > 2 else d
+                hostname = f"mail.{root_d}"
+                
+                deployed_domains.append({"domain": d, "ip": ip, "hostname": hostname})
+                
+                # Get DKIM public key if available
+                dkim_record = ""
+                if d in dkim_pub_keys:
+                    pub_key = dkim_pub_keys[d]
+                    # Extract key content from PEM format
+                    key_lines = [line for line in pub_key.split('\n') if not line.startswith('---')]
+                    dkim_record = ''.join(key_lines).replace('\n', '')
+                
+                dns_records.append({
+                    "domain": d,
+                    "records": [
+                        {"type": "A", "name": hostname, "value": ip},
+                        {"type": "PTR", "name": ip, "value": hostname},
+                        {"type": "TXT", "name": d, "value": f"v=spf1 ip4:{ip} ~all"},
+                        {"type": "TXT", "name": f"default._domainkey.{d}", "value": f"v=DKIM1; k=rsa; p={dkim_record}" if dkim_record else "(Key not available)"},
+                        {"type": "TXT", "name": f"_dmarc.{d}", "value": f"v=DMARC1; p=none; rua=mailto:dmarc@{d}"}
+                    ]
+                })
+
             # Save DB Record
             with app.app_context():
                 try:
@@ -2904,35 +3428,6 @@ def run_install(data, user_id):
                 "ptr_results": ptr_failures
             }, user_id)
             
-            # Collect DNS records for completion modal
-            for m in mappings:
-                ip = m["ip"]
-                d = m["domain"]
-                parts = d.split('.')
-                root_d = ".".join(parts[-2:]) if len(parts) > 2 else d
-                hostname = f"mail.{root_d}"
-                
-                deployed_domains.append({"domain": d, "ip": ip, "hostname": hostname})
-                
-                # Get DKIM public key if available
-                dkim_record = ""
-                if d in dkim_pub_keys:
-                    pub_key = dkim_pub_keys[d]
-                    # Extract key content from PEM format
-                    key_lines = [line for line in pub_key.split('\n') if not line.startswith('---')]
-                    dkim_record = ''.join(key_lines).replace('\n', '')
-                
-                dns_records.append({
-                    "domain": d,
-                    "records": [
-                        {"type": "A", "name": hostname, "value": ip},
-                        {"type": "PTR", "name": ip, "value": hostname},
-                        {"type": "TXT", "name": d, "value": f"v=spf1 ip4:{ip} ~all"},
-                        {"type": "TXT", "name": f"default._domainkey.{d}", "value": f"v=DKIM1; k=rsa; p={dkim_record}" if dkim_record else "(Key not available)"},
-                        {"type": "TXT", "name": f"_dmarc.{d}", "value": f"v=DMARC1; p=none; rua=mailto:dmarc@{d}"}
-                    ]
-                })
-            
             # Mark verification and installation as complete
             update_progress("verify", "success", "Verification complete")
 
@@ -2944,6 +3439,7 @@ def run_install(data, user_id):
             log(">>> [CLEANUP] Cleanup complete.")
 
             update_progress("complete", "success", f"Installation completed successfully! {len(deployed_domains)} domain(s) deployed.")
+            install_ok = True
 
         except Exception as e:
             log(f"!!! Installation Failed: {e}")
@@ -2970,6 +3466,31 @@ def run_install(data, user_id):
         }, user_id)
 
     finally:
+        if job_db_id:
+            try:
+                with app.app_context():
+                    job = InstallJob.query.get(job_db_id)
+                    if job:
+                        job.status = JobStatus.SUCCESS if install_ok else JobStatus.FAILED
+                        job.completed_at = datetime.utcnow()
+                        if not job.started_at:
+                            job.started_at = datetime.utcnow()
+                        db.session.commit()
+            except Exception:
+                pass
+        
+        try:
+            with app.app_context():
+                server = InstalledPMTA.query.filter_by(
+                    host_ip=server_ip,
+                    user_id=user_id
+                ).first()
+                if server:
+                    server.status = "active" if install_ok else "failed"
+                    db.session.commit()
+        except Exception:
+            pass
+
         # 2. REVERT PASSWORD
         log(">>> [SECURITY] Reverting Server Password...")
         # STABILITY MODE: Check if rotation actually happened
@@ -2995,6 +3516,54 @@ def get_install_logs():
         except Exception:
              return jsonify({"logs": "Error reading log file"})
     return jsonify({"logs": ""})
+
+
+@app.route("/api/logs", methods=["GET"])
+@jwt_required()
+@limiter.limit("30 per minute")
+def get_realtime_logs():
+    blocked = require_active_user()
+    if blocked:
+        return blocked
+    user_id = get_jwt_identity()
+    try:
+        offset = int(request.args.get("offset", 0))
+    except Exception:
+        offset = 0
+    if offset < 0:
+        offset = 0
+
+    log_file_path = get_log_file(user_id)
+    if not os.path.exists(log_file_path):
+        return jsonify({"logs": [], "next_offset": offset})
+
+    max_read_bytes = 200_000
+    logs = []
+    next_offset = offset
+
+    try:
+        with open(log_file_path, "rb") as f:
+            f.seek(offset, os.SEEK_SET)
+            chunk = f.read(max_read_bytes)
+            if not chunk:
+                return jsonify({"logs": [], "next_offset": offset})
+
+            # Avoid returning a partial last line when truncated mid-line
+            if len(chunk) == max_read_bytes and not chunk.endswith(b"\n"):
+                tail = f.readline()
+                if tail:
+                    chunk += tail
+
+            next_offset = offset + len(chunk)
+
+        text = chunk.decode("utf-8", errors="replace")
+        logs = [ln for ln in text.splitlines() if ln != ""]
+    except Exception:
+        logs = []
+        next_offset = offset
+
+    return jsonify({"logs": logs, "next_offset": next_offset})
+
 
 @app.route("/api/dns/records", methods=["GET"])
 @app.route("/dns/records", methods=["GET"]) # Legacy alias
@@ -3084,35 +3653,223 @@ def get_dns_records():
 
 @app.route("/api/test-ssh", methods=["POST"])
 @jwt_required()
+@limiter.limit("5 per minute")
 def test_ssh_connection():
+    try:
+        data = request.json
+        server_ip = data.get("server_ip")
+        ssh_port = data.get("ssh_port", 22)
+        ssh_user = data.get("ssh_user")
+        ssh_pass = data.get("ssh_pass")
+        
+        # If not provided in body, check if server_id is provided to fetch from DB
+        server_id = data.get("server_id")
+        if server_id and not ssh_pass:
+            user_id = get_jwt_identity()
+            ip, user, password, port = get_install_credentials(user_id, server_id)
+            if ip:
+                server_ip = ip
+                ssh_user = user
+                ssh_pass = password
+                ssh_port = port
+                
+        if not server_ip or not ssh_user or not ssh_pass:
+            return jsonify({"success": False, "message": "Missing credentials"}), 400
+
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client.connect(server_ip, port=int(ssh_port), username=ssh_user, password=ssh_pass, timeout=5)
+        client.close()
+        # Track SSH test (non-blocking)
+        try:
+            _uid = get_jwt_identity()
+            if _uid:
+                _track_usage(_uid, ssh_test=True)
+        except Exception:
+            pass
+        return jsonify({"success": True, "message": "Connection Successful"})
+    except Exception as e:
+        _logging.error("[/api/test-ssh] Exception: %s", str(e))
+        return jsonify({"success": False, "message": str(e)}), 200  # Return 200 so UI handles it gracefully
+
+@app.route("/api/test-ssh-advanced", methods=["POST"])
+@jwt_required()
+def test_ssh_advanced():
+    """Advanced SSH test: OS detection, PMTA check, port scan, firewall diagnostics."""
     data = request.json
     server_ip = data.get("server_ip")
     ssh_port = data.get("ssh_port", 22)
     ssh_user = data.get("ssh_user")
     ssh_pass = data.get("ssh_pass")
-    
-    # If not provided in body, check if server_id is provided to fetch from DB
-    server_id = data.get("server_id")
-    if server_id and not ssh_pass:
-        user_id = get_jwt_identity()
-        ip, user, password, port = get_install_credentials(user_id, server_id)
-        if ip:
-            server_ip = ip
-            ssh_user = user
-            ssh_pass = password
-            ssh_port = port
-            
+
     if not server_ip or not ssh_user or not ssh_pass:
-        return jsonify({"success": False, "message": "Missing credentials"}), 400
+        return jsonify({"success": False, "message": "Missing credentials", "checks": {}}), 400
+
+    checks = {}
+
+    # --- 1. SSH Connection ---
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    try:
+        client.connect(server_ip, port=int(ssh_port), username=ssh_user, password=ssh_pass, timeout=10)
+        checks["ssh"] = {"status": "pass", "detail": f"Connected on port {ssh_port}"}
+    except paramiko.AuthenticationException:
+        checks["ssh"] = {"status": "fail", "detail": "Authentication failed — check username/password"}
+        return jsonify({"success": False, "message": "SSH authentication failed", "checks": checks}), 200
+    except Exception as e:
+        checks["ssh"] = {"status": "fail", "detail": str(e)}
+        return jsonify({"success": False, "message": f"SSH connection failed: {e}", "checks": checks}), 200
+
+    def ssh_exec(cmd, timeout=10):
+        """Helper: execute command and return stdout string."""
+        try:
+            stdin, stdout, stderr = client.exec_command(cmd, timeout=timeout)
+            return stdout.read().decode("utf-8", errors="replace").strip()
+        except Exception:
+            return ""
 
     try:
-        client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        client.connect(server_ip, port=int(ssh_port), username=ssh_user, password=ssh_pass, timeout=5)
-        client.close()
-        return jsonify({"success": True, "message": "Connection Successful"})
+        # --- 2. OS Detection ---
+        os_release = ssh_exec("cat /etc/os-release 2>/dev/null")
+        os_name = ""
+        os_version = ""
+        os_detail = "Unknown OS"
+        if os_release:
+            for line in os_release.split("\n"):
+                if line.startswith("PRETTY_NAME="):
+                    os_detail = line.split("=", 1)[1].strip().strip('"')
+                elif line.startswith("ID=") and not os_name:
+                    os_name = line.split("=", 1)[1].strip().strip('"')
+                elif line.startswith("VERSION_ID="):
+                    os_version = line.split("=", 1)[1].strip().strip('"')
+        # Classify support
+        supported_os = ["ubuntu", "debian", "centos", "rocky", "almalinux", "rhel", "ol"]
+        os_supported = any(s in os_name.lower() for s in supported_os) if os_name else False
+        checks["os"] = {
+            "status": "pass" if os_supported else "warn",
+            "detail": os_detail,
+            "name": os_name,
+            "version": os_version
+        }
+
+        # --- 3. PMTA Installation Check ---
+        pmta_path = ssh_exec("which pmtad 2>/dev/null || which /usr/sbin/pmtad 2>/dev/null")
+        pmta_version = ""
+        if pmta_path:
+            pmta_version = ssh_exec("pmtad --version 2>&1 | head -1")
+            checks["pmta"] = {
+                "status": "info",
+                "detail": f"PMTA already installed ({pmta_version})" if pmta_version else "PMTA binary found",
+                "installed": True,
+                "version": pmta_version
+            }
+        else:
+            checks["pmta"] = {
+                "status": "pass",
+                "detail": "Not installed (fresh server — ready for deployment)",
+                "installed": False,
+                "version": ""
+            }
+
+        # --- 4. Port Scan ---
+        required_ports = {"25": "SMTP", "587": "Submission", "80": "HTTP", "443": "HTTPS"}
+        port_results = {}
+        # Use ss (or netstat fallback) to check listening ports
+        listening_output = ssh_exec("ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null")
+        # Also check if ports are blocked at the kernel level by trying to bind
+        for port, label in required_ports.items():
+            if f":{port} " in listening_output or f":{port}\t" in listening_output:
+                port_results[port] = "in_use"
+            else:
+                # Check if port is available (can be bound)
+                bind_test = ssh_exec(f"timeout 2 bash -c 'echo >/dev/tcp/127.0.0.1/{port}' 2>&1 && echo OPEN || echo CLOSED")
+                if "OPEN" in bind_test:
+                    port_results[port] = "open"
+                else:
+                    port_results[port] = "available"
+
+        closed_ports = [f"{p} ({required_ports[p]})" for p, s in port_results.items() if s == "in_use"]
+        if closed_ports:
+            checks["ports"] = {
+                "status": "warn",
+                "detail": f"Ports already in use: {', '.join(closed_ports)}",
+                "results": port_results
+            }
+        else:
+            checks["ports"] = {
+                "status": "pass",
+                "detail": "All required ports available",
+                "results": port_results
+            }
+
+        # --- 5. Firewall Detection ---
+        fw_detail = "No firewall detected"
+        fw_type = "none"
+        fw_active = False
+
+        # Check firewalld first (CentOS/RHEL)
+        firewalld_status = ssh_exec("systemctl is-active firewalld 2>/dev/null")
+        if firewalld_status == "active":
+            fw_active = True
+            fw_type = "firewalld"
+            fw_rules = ssh_exec("firewall-cmd --list-all 2>/dev/null | head -15")
+            fw_detail = f"firewalld active"
+            # Check if SMTP is allowed
+            if "smtp" in fw_rules.lower() or "25/tcp" in fw_rules:
+                fw_detail += " — SMTP allowed"
+            else:
+                fw_detail += " — SMTP may be blocked"
+        else:
+            # Check iptables
+            ipt_rules = ssh_exec("iptables -L -n 2>/dev/null | head -20")
+            if ipt_rules and "ACCEPT" in ipt_rules:
+                fw_active = True
+                fw_type = "iptables"
+                drop_count = ipt_rules.count("DROP") + ipt_rules.count("REJECT")
+                if drop_count > 0:
+                    fw_detail = f"iptables active with {drop_count} blocking rule(s)"
+                else:
+                    fw_detail = "iptables active — no blocking rules"
+            elif ipt_rules:
+                fw_active = True
+                fw_type = "iptables"
+                fw_detail = "iptables present (rules detected)"
+            # Check ufw
+            ufw_status = ssh_exec("ufw status 2>/dev/null | head -5")
+            if "Status: active" in ufw_status:
+                fw_active = True
+                fw_type = "ufw"
+                fw_detail = "UFW firewall active"
+
+        checks["firewall"] = {
+            "status": "warn" if fw_active else "pass",
+            "detail": fw_detail,
+            "type": fw_type,
+            "active": fw_active
+        }
+
     except Exception as e:
-        return jsonify({"success": False, "message": str(e)}), 200 # Return 200 so UI handles it gracefully
+        checks["error"] = {"status": "fail", "detail": f"Check execution error: {e}"}
+    finally:
+        client.close()
+
+    # Overall status
+    all_statuses = [c.get("status", "pass") for c in checks.values()]
+    if "fail" in all_statuses:
+        overall_status = False
+        message = "Some checks failed — review results"
+    elif "warn" in all_statuses:
+        overall_status = True
+        message = "Connected with warnings — review before deploying"
+    else:
+        overall_status = True
+        message = "All checks passed — server ready for deployment"
+
+    return jsonify({
+        "success": overall_status,
+        "message": message,
+        "checks": checks
+    }), 200
 
 @app.route("/api/logs/install/history", methods=["GET"])
 @jwt_required()
@@ -3284,7 +4041,13 @@ def list_servers():
             if host_val and not host_val.replace('.', '').isdigit():
                 domains_for_server.append(host_val)
         
-        # NOTE: No Domain-table fallback — that would show stale/unrelated domains
+        # 3. Fallback: Domain table (populated reliably during every deployment)
+        #    Only used when dns_details is empty — ensures dropdown has domains
+        if not domains_for_server:
+            user_domains = Domain.query.filter_by(user_id=int(user_id)).all()
+            for ud in user_domains:
+                if ud.name and ud.name not in domains_for_server:
+                    domains_for_server.append(ud.name)
         
         # Emit ONE entry per server with a 'domains' array + 'domain' (first domain) for compatibility
         result.append({
@@ -3408,17 +4171,54 @@ def get_inbound_emails():
         "pages": emails.pages,
         "current_page": page
     })
-
 if __name__ == "__main__":
-
     print("----------------------------------------------------------------")
-    print(">>> BACKEND STARTING - VERSION: ABSOLUTE PATH FIX")
-    print(f">>> LOG FILE: {INSTALL_LOG_FILE}")
+    print(">>> BACKEND STARTING - PMTA DASHBOARD")
     print("----------------------------------------------------------------")
 
-    # Ensure database tables exist with the latest schema
+    # --- AUTO-SEED LOCAL DATABASE ---
     with app.app_context():
-        db.create_all()
-        print(">>> Database tables verified/created.")
+        try:
+            db.create_all()
+            print("[STARTUP] Database tables verified/created.")
+            
+            # --- AUTO-MIGRATE: Add new columns to User table seamlessly ---
+            from sqlalchemy import text
+            from sqlalchemy.exc import OperationalError, ProgrammingError
+            for col_sql in [
+                "ALTER TABLE user ADD COLUMN plan VARCHAR(50);",
+                "ALTER TABLE user ADD COLUMN is_active BOOLEAN DEFAULT 1;",
+                "ALTER TABLE user ADD COLUMN subscription_expires_at DATETIME;",
+            ]:
+                try:
+                    db.session.execute(text(col_sql))
+                    db.session.commit()
+                    print(f"[STARTUP] Migrated schema: {col_sql[:60]}")
+                except (OperationalError, ProgrammingError):
+                    db.session.rollback()  # Column already exists, skip silently
+            # ----------------------------------------------------------------
+            
+            # Auto-seed Admin User
+            admin_email = os.getenv("ADMIN_EMAIL", "admin@test.com")
+            admin_password = os.getenv("ADMIN_PASSWORD", "admin123")
+            existing_admin = User.query.filter_by(role='admin').first()
+            
+            if not existing_admin:
+                hashed = bcrypt.generate_password_hash(admin_password).decode('utf-8')
+                admin_user = User(
+                    name="Admin",
+                    email=admin_email,
+                    password_hash=hashed,
+                    role='admin',
+                    is_verified=True
+                )
+                db.session.add(admin_user)
+                db.session.commit()
+                print(f"[STARTUP] Seeded default admin user: {admin_email} / {admin_password}")
+            else:
+                print(f"[STARTUP] Admin user already exists: {existing_admin.email}")
+                
+        except Exception as e:
+            print(f"[ERROR] Failed to initialize DB or seed admin: {e}")
 
-    app.run(host="0.0.0.0", port=5000, debug=False)
+    app.run(debug=os.getenv("FLASK_DEBUG", "False").lower() == "true", host='0.0.0.0', port=5000)

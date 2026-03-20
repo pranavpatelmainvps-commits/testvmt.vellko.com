@@ -3,11 +3,19 @@ export const API_BASE = '';
 export async function fetchApi<T>(endpoint: string, options?: RequestInit): Promise<T> {
     // Add Auth Header
     const token = localStorage.getItem('token');
+
+    // DEBUG: Remove when no longer needed
+    console.log("API Token:", token);
+    if (!token) {
+        console.warn(`[fetchApi] No JWT token found in localStorage for request: ${endpoint}`);
+    }
+
     const headers = {
         'Content-Type': 'application/json',
         ...(token && { 'Authorization': `Bearer ${token}` }),
         ...options?.headers,
     };
+
 
     const response = await fetch(`${API_BASE}${endpoint}`, {
         ...options,

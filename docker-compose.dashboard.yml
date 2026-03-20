@@ -12,4 +12,5 @@ services:
       - /var/spool/pmta:/var/spool/pmta
     environment:
       - FLASK_ENV=development
+      - JWT_SECRET_KEY=local-dev-secret-key-2026
       # No longer needs database for Roundcube, as that is on Inbound Server

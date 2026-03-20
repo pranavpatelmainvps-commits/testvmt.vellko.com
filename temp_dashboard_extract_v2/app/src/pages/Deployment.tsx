@@ -1,8 +1,8 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Rocket, Plus, Trash2, Server, User, Lock, CheckCircle,
   FileText, List, ArrowLeft, Wifi, WifiOff, RefreshCw, Globe, Zap, Hash,
-  Loader2, CheckCircle2, Circle, XCircle
+  Loader2, CheckCircle2, Circle, XCircle, Shield, Monitor, AlertTriangle, Info
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -46,6 +46,33 @@ interface MappingRow {
   ip: string;
 }
 
+interface CheckResult {
+  status: 'pass' | 'warn' | 'fail' | 'info';
+  detail: string;
+  [key: string]: any;
+}
+
+interface AdvancedTestResult {
+  success: boolean;
+  message: string;
+  checks: Record<string, CheckResult>;
+  os?: string | null;
+  pmta_installed?: boolean;
+  ports_in_use?: string[];
+  ram_mb?: number | null;
+  disk_available?: string | null;
+  cpu_cores?: number | null;
+  load_average?: string | null;
+  is_root?: boolean | null;
+  package_manager?: string | null;
+  port25_outbound?: boolean | null;
+  ssh_latency_ms?: number | null;
+  warnings?: string[];
+  errors?: string[];
+  score?: number;
+  status?: 'ready' | 'warning' | 'failed';
+}
+
 type PageView = 'server-list' | 'add-server' | 'deploy';
 
 export function Deployment() {
@@ -62,6 +89,7 @@ export function Deployment() {
   const [newPort, setNewPort] = useState('22');
   const [isTesting, setIsTesting] = useState(false);
   const [testResult, setTestResult] = useState<'success' | 'fail' | null>(null);
+  const [advancedResult, setAdvancedResult] = useState<AdvancedTestResult | null>(null);
 
   // Deploy form
   const [deployPass, setDeployPass] = useState('');
@@ -76,6 +104,26 @@ export function Deployment() {
   const { install, isLoading: isInstalling } = useInstall();
   const { logs, isConnected, clearLogs } = useLogStream(showLogs);
   const { data: progressData } = useInstallProgress(showLogs);
+  const [polledLogs, setPolledLogs] = useState<string[]>([]);
+  const [logOffset, setLogOffset] = useState(0);
+  const logEndRef = useRef<HTMLDivElement | null>(null);
+  const pollerRef = useRef<number | null>(null);
+  const [isRetrying, setIsRetrying] = useState(false);
+
+  const handleDownloadLogs = () => {
+    if (!polledLogs || polledLogs.length === 0) return;
+    const text = polledLogs.join('\n') + '\n';
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const ts = new Date().toISOString().replace(/[:.]/g, '-');
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `deployment-logs-${ts}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
 
   // ---- Fetch Servers ----
   const fetchServers = useCallback(async () => {
@@ -94,7 +142,64 @@ export function Deployment() {
     fetchServers();
   }, [fetchServers]);
 
-  // ---- Test SSH ----
+  const deploymentFinished = progressData?.status === 'completed' || progressData?.status === 'complete' || progressData?.status === 'failed' || progressData?.status === 'error';
+  const deploymentFailed = progressData?.status === 'failed' || progressData?.status === 'error';
+
+  useEffect(() => {
+    if (!showLogs) return;
+
+    let cancelled = false;
+
+    const tick = async () => {
+      try {
+        const res = await fetchApi<{ logs: string[]; next_offset: number }>(`/api/logs?offset=${logOffset}`);
+        if (cancelled) return;
+        if (Array.isArray(res?.logs) && res.logs.length > 0) {
+          setPolledLogs(prev => [...prev, ...res.logs]);
+        }
+        if (typeof res?.next_offset === 'number') {
+          setLogOffset(res.next_offset);
+        }
+      } catch {
+        // keep polling silently
+      }
+    };
+
+    // Reset on new deployment session
+    setPolledLogs([]);
+    setLogOffset(0);
+    tick();
+
+    pollerRef.current = window.setInterval(() => {
+      if (!deploymentFinished) tick();
+    }, 2000);
+
+    return () => {
+      cancelled = true;
+      if (pollerRef.current) {
+        window.clearInterval(pollerRef.current);
+        pollerRef.current = null;
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showLogs]);
+
+  useEffect(() => {
+    if (!showLogs) return;
+    if (deploymentFinished && pollerRef.current) {
+      window.clearInterval(pollerRef.current);
+      pollerRef.current = null;
+    }
+  }, [deploymentFinished, showLogs]);
+
+  useEffect(() => {
+    if (!showLogs) return;
+    if (logEndRef.current) {
+      logEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [polledLogs, showLogs]);
+
+  // ---- Test SSH (Full Validation) ----
   const handleTestConnection = async () => {
     if (!newIp || !newUser || !newPass) {
       toast.error('Fill all fields first');
@@ -102,22 +207,27 @@ export function Deployment() {
     }
     setIsTesting(true);
     setTestResult(null);
+    setAdvancedResult(null);
     try {
-      const result = await fetchApi<{ success: boolean; message: string }>('/api/test-ssh', {
+      // Uses /api/server/test-ssh which calls validate_ssh_server()
+      // and returns full result (os, ram, disk, cpu, score, warnings, etc.)
+      const result = await fetchApi<AdvancedTestResult>('/api/server/test-ssh', {
         method: 'POST',
         body: JSON.stringify({
-          server_ip: newIp,
-          ssh_user: newUser,
-          ssh_pass: newPass,
-          ssh_port: parseInt(newPort),
+          host: newIp,
+          username: newUser,
+          password: newPass,
+          port: parseInt(newPort),
         }),
       });
+      console.log('[TestSSH] Full validation result:', result);
+      setAdvancedResult(result);
       if (result.success) {
         setTestResult('success');
-        toast.success('SSH connection successful!');
+        toast.success(result.message || 'Server validation passed!');
       } else {
         setTestResult('fail');
-        toast.error(result.message || 'Connection failed');
+        toast.error(result.message || (result.errors?.join(', ')) || 'Validation failed');
       }
     } catch (err) {
       setTestResult('fail');
@@ -126,6 +236,28 @@ export function Deployment() {
       setIsTesting(false);
     }
   };
+
+  const precheckStatus = advancedResult?.status ?? (advancedResult && advancedResult.success === false ? 'failed' : undefined);
+  const precheckScore = typeof advancedResult?.score === 'number' ? advancedResult?.score : null;
+  const precheckBadge = precheckStatus === 'ready'
+    ? "bg-green-500/10 text-green-400 border-green-500/20"
+    : precheckStatus === 'warning'
+      ? "bg-orange-500/10 text-orange-400 border-orange-500/20"
+      : precheckStatus === 'failed'
+        ? "bg-red-500/10 text-red-400 border-red-500/20"
+        : "bg-slate-700/20 text-slate-300 border-slate-700/40";
+
+  // Use backend-generated warnings if available, fallback to client-side
+  const precheckWarnings: string[] = advancedResult?.warnings && advancedResult.warnings.length > 0
+    ? advancedResult.warnings
+    : (() => {
+        const w: string[] = [];
+        if (advancedResult?.pmta_installed) w.push("PMTA already installed");
+        if ((advancedResult?.ports_in_use?.length || 0) > 0) w.push("Ports already in use");
+        if (typeof advancedResult?.ram_mb === 'number' && advancedResult.ram_mb < 2048) w.push("Low RAM");
+        if (precheckStatus === 'warning') w.push("Proceed with caution");
+        return w;
+      })();
 
   // ---- Save & Deploy from Add Server ----
   const handleSaveAndDeploy = () => {
@@ -222,6 +354,55 @@ export function Deployment() {
     } catch (err) {
       setShowLogs(false);
       toast.error('Deploy failed: ' + (err instanceof Error ? err.message : 'Unknown'));
+    }
+  };
+
+  const handleRetryDeploy = async () => {
+    if (!selectedServer) return;
+    if (!deployPass) {
+      toast.error('Enter the SSH password for this server');
+      return;
+    }
+    if (!isFormValid()) {
+      toast.error('Please fix validation errors before deploying');
+      return;
+    }
+
+    setIsRetrying(true);
+    try {
+      clearLogs();
+      setPolledLogs([]);
+      setLogOffset(0);
+      setShowLogs(false);
+      setTimeout(() => setShowLogs(true), 0);
+
+      let validMappings: { domain: string; ip: string }[] = [];
+      if (bulkMode) {
+        const ips = bulkIPs.split('\n').map(s => s.trim()).filter(Boolean);
+        const domains = bulkDomains.split('\n').map(s => s.trim()).filter(Boolean);
+        if (ips.length === 0) { toast.error('Add at least one IP'); return; }
+        if (ips.length !== domains.length) {
+          toast.error(`Mismatch: ${ips.length} IPs vs ${domains.length} domains`);
+          return;
+        }
+        validMappings = ips.map((ip, i) => ({ ip, domain: domains[i] }));
+      } else {
+        validMappings = mappings.filter(m => m.domain && m.ip).map(m => ({ domain: m.domain, ip: m.ip }));
+        if (validMappings.length === 0) { toast.error('Add at least one domain mapping'); return; }
+      }
+
+      await install({
+        server_ip: selectedServer.host_ip,
+        ssh_user: selectedServer.ssh_username,
+        ssh_pass: deployPass,
+        mappings: validMappings,
+        mode: 'install',
+      });
+      toast.success('Deployment retry started!');
+    } catch (err) {
+      toast.error('Retry failed: ' + (err instanceof Error ? err.message : 'Unknown'));
+    } finally {
+      setIsRetrying(false);
     }
   };
 
@@ -442,8 +623,189 @@ export function Deployment() {
 
             <Separator />
 
-            {/* Test result badge */}
-            {testResult && (
+            {/* Advanced test results */}
+            {advancedResult && (
+              <div className="space-y-2">
+                <div className={cn(
+                  "flex items-center gap-2 p-3 rounded-lg border text-sm font-medium",
+                  advancedResult.success
+                    ? "bg-green-500/10 border-green-500/20 text-green-400"
+                    : "bg-red-500/10 border-red-500/20 text-red-400"
+                )}>
+                  {advancedResult.success ? <CheckCircle className="w-4 h-4" /> : <XCircle className="w-4 h-4" />}
+                  {advancedResult.message || (advancedResult.success
+                    ? `Server validation passed${typeof advancedResult.score === 'number' ? ` (Score: ${advancedResult.score}/100)` : ''}`
+                    : advancedResult.errors?.join(', ') || 'Validation failed')}
+                </div>
+
+                {(advancedResult.os || advancedResult.ram_mb != null || advancedResult.disk_available || typeof advancedResult.score === 'number' || advancedResult.status) && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                    <div className="flex items-center justify-between p-2.5 rounded-lg border border-slate-800 bg-slate-900/40 text-sm">
+                      <span className="text-slate-400">Status</span>
+                      <span className={cn("px-2 py-0.5 rounded border text-xs font-semibold uppercase tracking-wide", precheckBadge)}>
+                        {advancedResult.status || 'unknown'}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between p-2.5 rounded-lg border border-slate-800 bg-slate-900/40 text-sm">
+                      <span className="text-slate-400">Score</span>
+                      <span className="text-white font-mono text-sm">{precheckScore != null ? `${precheckScore}/100` : '—'}</span>
+                    </div>
+                    <div className="flex items-center justify-between p-2.5 rounded-lg border border-slate-800 bg-slate-900/40 text-sm">
+                      <span className="text-slate-400">OS</span>
+                      <span className="text-white truncate max-w-[60%]" title={advancedResult.os || ''}>{advancedResult.os || '—'}</span>
+                    </div>
+                    <div className="flex items-center justify-between p-2.5 rounded-lg border border-slate-800 bg-slate-900/40 text-sm">
+                      <span className="text-slate-400">RAM</span>
+                      <span className="text-white font-mono">{advancedResult.ram_mb != null ? `${advancedResult.ram_mb} MB` : '—'}</span>
+                    </div>
+                    <div className="flex items-center justify-between p-2.5 rounded-lg border border-slate-800 bg-slate-900/40 text-sm">
+                      <span className="text-slate-400">Disk</span>
+                      <span className="text-white font-mono">{advancedResult.disk_available || '—'}</span>
+                    </div>
+                    <div className="flex items-center justify-between p-2.5 rounded-lg border border-slate-800 bg-slate-900/40 text-sm">
+                      <span className="text-slate-400">PMTA Installed</span>
+                      <span className={cn("font-semibold", advancedResult.pmta_installed ? "text-orange-400" : "text-green-400")}>
+                        {advancedResult.pmta_installed ? 'Yes' : 'No'}
+                      </span>
+                    </div>
+                    {advancedResult.cpu_cores != null && (
+                      <div className="flex items-center justify-between p-2.5 rounded-lg border border-slate-800 bg-slate-900/40 text-sm">
+                        <span className="text-slate-400">CPU Cores</span>
+                        <span className={cn("font-mono", advancedResult.cpu_cores < 2 ? "text-orange-400" : "text-white")}>
+                          {advancedResult.cpu_cores}
+                        </span>
+                      </div>
+                    )}
+                    {advancedResult.load_average != null && (
+                      <div className="flex items-center justify-between p-2.5 rounded-lg border border-slate-800 bg-slate-900/40 text-sm">
+                        <span className="text-slate-400">Load Average</span>
+                        <span className="text-white font-mono">{advancedResult.load_average}</span>
+                      </div>
+                    )}
+                    {advancedResult.is_root != null && (
+                      <div className="flex items-center justify-between p-2.5 rounded-lg border border-slate-800 bg-slate-900/40 text-sm">
+                        <span className="text-slate-400">Root Access</span>
+                        <span className={cn("font-semibold", advancedResult.is_root ? "text-green-400" : "text-red-400")}>
+                          {advancedResult.is_root ? 'Yes' : 'No'}
+                        </span>
+                      </div>
+                    )}
+                    {advancedResult.package_manager != null && (
+                      <div className="flex items-center justify-between p-2.5 rounded-lg border border-slate-800 bg-slate-900/40 text-sm">
+                        <span className="text-slate-400">Package Manager</span>
+                        <span className="text-white font-mono uppercase text-xs">{advancedResult.package_manager}</span>
+                      </div>
+                    )}
+                    {advancedResult.port25_outbound != null && (
+                      <div className="flex items-center justify-between p-2.5 rounded-lg border border-slate-800 bg-slate-900/40 text-sm">
+                        <span className="text-slate-400">Port 25 Outbound</span>
+                        <span className={cn("font-semibold", advancedResult.port25_outbound ? "text-green-400" : "text-red-400")}>
+                          {advancedResult.port25_outbound ? 'Open' : 'Blocked'}
+                        </span>
+                      </div>
+                    )}
+                    {advancedResult.ssh_latency_ms != null && (
+                      <div className="flex items-center justify-between p-2.5 rounded-lg border border-slate-800 bg-slate-900/40 text-sm">
+                        <span className="text-slate-400">SSH Latency</span>
+                        <span className={cn("font-mono", advancedResult.ssh_latency_ms > 200 ? "text-orange-400" : "text-white")}>
+                          {advancedResult.ssh_latency_ms}ms
+                        </span>
+                      </div>
+                    )}
+                    <div className="md:col-span-2 p-2.5 rounded-lg border border-slate-800 bg-slate-900/40 text-sm">
+                      <div className="flex items-start justify-between gap-3">
+                        <span className="text-slate-400 shrink-0">Ports in use</span>
+                        <div className="text-right">
+                          {(advancedResult.ports_in_use && advancedResult.ports_in_use.length > 0) ? (
+                            <div className="space-y-1">
+                              {advancedResult.ports_in_use.slice(0, 6).map((p, idx) => (
+                                <div key={idx} className="text-xs font-mono text-orange-300/90 break-all">{p}</div>
+                              ))}
+                              {advancedResult.ports_in_use.length > 6 && (
+                                <div className="text-xs text-muted-foreground">+{advancedResult.ports_in_use.length - 6} more</div>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="text-green-400 font-semibold">None</span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {precheckWarnings.length > 0 && (
+                  <div className={cn(
+                    "p-3 rounded-lg border text-sm",
+                    precheckStatus === 'warning'
+                      ? "bg-orange-500/10 border-orange-500/20 text-orange-300"
+                      : precheckStatus === 'failed'
+                        ? "bg-red-500/10 border-red-500/20 text-red-300"
+                        : "bg-slate-800/40 border-slate-700 text-slate-300"
+                  )}>
+                    <div className="flex items-start gap-2">
+                      <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+                      <div className="space-y-1">
+                        {precheckWarnings.map((w, i) => (
+                          <div key={i}>{w}</div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {advancedResult.checks && Object.keys(advancedResult.checks).length > 0 && (
+                <div className="grid gap-2">
+                  {Object.entries(advancedResult.checks).map(([key, check]) => {
+                    const icons: Record<string, any> = {
+                      ssh: Wifi, os: Monitor, pmta: Server, ports: Globe, firewall: Shield, error: XCircle
+                    };
+                    const Icon = icons[key] || Info;
+                    const labels: Record<string, string> = {
+                      ssh: 'SSH Connection', os: 'Operating System', pmta: 'PMTA Status',
+                      ports: 'Port Availability', firewall: 'Firewall', error: 'Error'
+                    };
+                    const statusColors: Record<string, string> = {
+                      pass: 'text-green-400 bg-green-500/10 border-green-500/20',
+                      warn: 'text-yellow-400 bg-yellow-500/10 border-yellow-500/20',
+                      fail: 'text-red-400 bg-red-500/10 border-red-500/20',
+                      info: 'text-blue-400 bg-blue-500/10 border-blue-500/20',
+                    };
+                    const statusIcons: Record<string, any> = {
+                      pass: CheckCircle2, warn: AlertTriangle, fail: XCircle, info: Info
+                    };
+                    const StatusIcon = statusIcons[check.status] || Circle;
+                    return (
+                      <div key={key} className={cn(
+                        "flex items-center gap-3 p-2.5 rounded-lg border text-sm",
+                        statusColors[check.status] || 'text-slate-400 bg-slate-800/50 border-slate-700'
+                      )}>
+                        <Icon className="w-4 h-4 shrink-0" />
+                        <span className="font-medium min-w-[130px]">{labels[key] || key}</span>
+                        <StatusIcon className="w-3.5 h-3.5 shrink-0" />
+                        <span className="text-xs opacity-90 truncate flex-1">{check.detail}</span>
+                        {key === 'ports' && check.results && (
+                          <div className="flex gap-1 ml-auto">
+                            {Object.entries(check.results as Record<string, string>).map(([port, status]) => (
+                              <span key={port} className={cn(
+                                "text-[10px] px-1.5 py-0.5 rounded font-mono",
+                                status === 'available' ? 'bg-green-500/20 text-green-400' :
+                                status === 'in_use' ? 'bg-yellow-500/20 text-yellow-400' :
+                                'bg-slate-700 text-slate-400'
+                              )}>{port}</span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+                )}
+              </div>
+            )}
+
+            {/* Simple fallback badge if no advanced result */}
+            {testResult && !advancedResult && (
               <div className={cn(
                 "flex items-center gap-2 p-3 rounded-lg border text-sm",
                 testResult === 'success'
@@ -471,13 +833,23 @@ export function Deployment() {
               </Button>
               <Button
                 onClick={handleSaveAndDeploy}
-                disabled={!newIp || !newPass}
+                disabled={!newIp || !newPass || precheckStatus === 'failed'}
                 className="bg-blue-600 hover:bg-blue-700 flex-1"
               >
                 <Rocket className="w-4 h-4 mr-2" />
                 Continue to Deploy
               </Button>
             </div>
+            {precheckStatus === 'warning' && (
+              <p className="text-xs text-orange-300/90">
+                Warning: server pre-check returned warnings. You can continue, but deployment may fail.
+              </p>
+            )}
+            {precheckStatus === 'failed' && (
+              <p className="text-xs text-red-300/90">
+                Deployment disabled: server pre-check failed.
+              </p>
+            )}
           </CardContent>
         </Card>
       </div>
@@ -683,7 +1055,7 @@ export function Deployment() {
         <Button
           size="lg"
           onClick={handleDeploy}
-          disabled={isInstalling || !deployPass || !isFormValid()}
+          disabled={isInstalling || !deployPass || !isFormValid() || precheckStatus === 'failed'}
           className="bg-blue-600 hover:bg-blue-700 px-8 disabled:opacity-50"
         >
           {isInstalling ? (
@@ -699,6 +1071,36 @@ export function Deployment() {
           )}
         </Button>
       </div>
+      {deploymentFailed && (
+        <div className="flex justify-end">
+          <Button
+            variant="outline"
+            size="lg"
+            onClick={handleRetryDeploy}
+            disabled={isInstalling || isRetrying || !deployPass || !isFormValid() || precheckStatus === 'failed'}
+            className="border-slate-700 text-slate-200"
+          >
+            {(isInstalling || isRetrying) ? (
+              <>
+                <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin mr-2" />
+                Retrying...
+              </>
+            ) : (
+              "Retry Deployment"
+            )}
+          </Button>
+        </div>
+      )}
+      {precheckStatus === 'warning' && (
+        <p className="text-sm text-orange-300/90 bg-orange-500/10 border border-orange-500/20 p-3 rounded-lg">
+          Warning: server pre-check returned warnings. Deployment is allowed, but proceed carefully.
+        </p>
+      )}
+      {precheckStatus === 'failed' && (
+        <p className="text-sm text-red-300/90 bg-red-500/10 border border-red-500/20 p-3 rounded-lg">
+          Deployment disabled: server pre-check failed.
+        </p>
+      )}
 
       {/* Active Deployment Details */}
       {showLogs && (
@@ -730,6 +1132,46 @@ export function Deployment() {
                    </span>
                  </p>
               </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Polling Log Viewer */}
+      {showLogs && (
+        <Card className="glass-card">
+          <CardHeader className="flex flex-row items-center justify-between">
+            <CardTitle className="text-lg font-semibold text-white flex items-center gap-2">
+              <CheckCircle className="w-5 h-5 text-green-500" />
+              Live Logs (Polling)
+            </CardTitle>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-muted-foreground">
+                {deploymentFinished ? 'Stopped' : 'Polling every 2s'}
+              </span>
+              {polledLogs.length > 0 && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleDownloadLogs}
+                  disabled={polledLogs.length === 0}
+                  className="border-slate-700 text-slate-200"
+                >
+                  Download Logs
+                </Button>
+              )}
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="rounded-lg p-4 h-[400px] overflow-y-auto font-mono text-sm bg-slate-950 border border-slate-800 text-slate-200 whitespace-pre-wrap">
+              {polledLogs.length > 0 ? (
+                polledLogs.map((line, idx) => (
+                  <div key={idx}>{line}</div>
+                ))
+              ) : (
+                <div className="text-slate-400">Waiting for logs...</div>
+              )}
+              <div ref={logEndRef} />
             </div>
           </CardContent>
         </Card>
