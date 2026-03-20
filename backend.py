@@ -870,6 +870,42 @@ def delete_user(user_id):
     db.session.commit()
     return jsonify({"message": "User deleted successfully"})
 
+@app.route("/api/server/test-ssh", methods=["POST"])
+@jwt_required()
+def test_ssh():
+    data = request.json or {}
+    host = data.get("host")
+    username = data.get("username")
+    password = data.get("password")
+    port = data.get("port", 22)
+
+    if not host or not username or password is None:
+        return jsonify({
+            "success": False,
+            "os": None,
+            "pmta_installed": False,
+            "ports_in_use": [],
+            "ram_mb": None,
+            "disk_available": None,
+            "errors": ["Missing required fields: host, username, password"],
+        })
+
+    try:
+        port = int(port) if port is not None else 22
+    except Exception:
+        port = 22
+
+    from ssh_validator import validate_ssh_server
+
+    result = validate_ssh_server(
+        host=str(host).strip(),
+        username=str(username),
+        password=str(password),
+        port=port,
+        timeout_seconds=10,
+    )
+    return jsonify(result)
+
 
 @app.route("/api/admin/analytics", methods=["GET"])
 @jwt_required()
