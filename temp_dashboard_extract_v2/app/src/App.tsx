@@ -1,99 +1,58 @@
-import { useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { Sidebar } from '@/components/Sidebar';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { AuthProvider, useAuth } from '@/context/AuthContext';
+
+import { Layout } from '@/components/Layout';
+import { ProtectedRoute } from '@/components/ProtectedRoute';
+
 import { Dashboard } from '@/pages/Dashboard';
 import { Deployment } from '@/pages/Deployment';
 import { DNSManager } from '@/pages/DNSManager';
 import { PMTAConfig } from '@/pages/PMTAConfig';
 import { AdminPanel } from '@/pages/AdminPanel';
 import { InstalledServers } from '@/pages/InstalledServers';
-import { Toaster } from '@/components/ui/sonner';
 import { ProfilePage } from '@/pages/ProfilePage';
 
-import { AuthProvider, useAuth } from '@/context/AuthContext';
 import { Login } from '@/pages/Login';
 import { Register } from '@/pages/Register';
 import { LandingPage } from '@/pages/LandingPage';
 
-type View = 'dashboard' | 'deploy' | 'servers' | 'dns' | 'logs' | 'pmta-config' | 'admin' | 'profile';
-
-// Component for authenticated users (Main App)
-function AuthenticatedApp() {
-  const [currentView, setCurrentView] = useState<View>('dashboard');
-
-
-  const renderView = () => {
-    switch (currentView) {
-      case 'dashboard':
-        return <Dashboard />;
-      case 'deploy':
-        return <Deployment />;
-      case 'servers':
-        return <InstalledServers />;
-      case 'dns':
-        return <DNSManager />;
-      case 'pmta-config':
-        return <PMTAConfig />;
-      case 'admin':
-        return <AdminPanel />;
-      case 'profile':
-        return <ProfilePage />;
-      default:
-        return <Dashboard />;
-    }
-  };
+function AppRoutes() {
+  const { isAuthenticated } = useAuth();
 
   return (
-    <div className="flex h-screen bg-[hsl(222,47%,6%)] text-foreground overflow-hidden">
-      <Sidebar currentView={currentView} onViewChange={setCurrentView} />
-      <main className="flex-1 overflow-y-auto overflow-x-hidden relative">
-        <AnimatePresence mode="wait">
-          <motion.div
-            key={currentView}
-            initial={{ opacity: 0, y: 15 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.98 }}
-            transition={{ duration: 0.25, ease: "easeOut" }}
-            className="min-h-full"
-          >
-            {renderView()}
-          </motion.div>
-        </AnimatePresence>
-      </main>
-      <Toaster />
-    </div>
+    <Routes>
+      {/* Public/Auth Routes */}
+      <Route path="/" element={isAuthenticated ? <Navigate to="/dashboard" replace /> : <LandingPage />} />
+      <Route path="/login" element={isAuthenticated ? <Navigate to="/dashboard" replace /> : <Login />} />
+      <Route path="/register" element={isAuthenticated ? <Navigate to="/dashboard" replace /> : <Register />} />
+
+      {/* Protected Routes inside Layout */}
+      <Route element={<ProtectedRoute />}>
+        <Route element={<Layout />}>
+          <Route path="/dashboard" element={<Dashboard />} />
+          <Route path="/deploy" element={<Deployment />} />
+          <Route path="/servers" element={<InstalledServers />} />
+          <Route path="/dns" element={<DNSManager />} />
+          <Route path="/pmta-config" element={<PMTAConfig />} />
+          <Route path="/admin" element={<AdminPanel />} />
+          <Route path="/profile" element={<ProfilePage />} />
+        </Route>
+      </Route>
+      
+      {/* Catch-all redirect */}
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Routes>
   );
 }
 
 function App() {
   return (
-    <AuthProvider>
-      <Root />
-    </AuthProvider>
+    <BrowserRouter>
+      <AuthProvider>
+        <AppRoutes />
+      </AuthProvider>
+    </BrowserRouter>
   );
 }
-
-function Root() {
-  const { isAuthenticated } = useAuth();
-  const [authMode, setAuthMode] = useState<'landing' | 'login' | 'register'>('landing');
-
-  if (!isAuthenticated) {
-    if (authMode === 'register') {
-      return <Register onSwitchToLogin={() => setAuthMode('login')} />;
-    }
-    if (authMode === 'login') {
-      return <Login onSwitchToRegister={() => setAuthMode('register')} />;
-    }
-    return (
-      <LandingPage
-        onGetStarted={() => setAuthMode('register')}
-        onLogin={() => setAuthMode('login')}
-      />
-    );
-  }
-
-  return <AuthenticatedApp />;
-}
-
 
 export default App;

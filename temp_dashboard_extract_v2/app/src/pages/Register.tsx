@@ -3,12 +3,10 @@ import { fetchApi } from '@/lib/api'; // Use shared api
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Lock, Mail, User, Terminal, ArrowLeft } from 'lucide-react';
+import { Link, useNavigate } from 'react-router-dom';
 
-interface RegisterProps {
-    onSwitchToLogin: () => void;
-}
-
-export function Register({ onSwitchToLogin }: RegisterProps) {
+export function Register() {
+    const navigate = useNavigate();
     const [firstName, setFirstName] = useState('');
     const [lastName, setLastName] = useState('');
     const [email, setEmail] = useState('');
@@ -61,8 +59,8 @@ export function Register({ onSwitchToLogin }: RegisterProps) {
             setLastName('');
             setEmail('');
             setPassword('');
-            // Optional: Auto-switch to login after delay
-            // setTimeout(onSwitchToLogin, 2000);
+            // Auto-switch to login after delay
+            setTimeout(() => navigate('/login'), 2000);
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Registration failed');
         } finally {
@@ -176,14 +174,13 @@ export function Register({ onSwitchToLogin }: RegisterProps) {
                         </Button>
 
                         <div className="text-center mt-4">
-                            <button
-                                type="button"
-                                onClick={onSwitchToLogin}
+                            <Link
+                                to="/login"
                                 className="text-sm text-slate-400 hover:text-white transition-colors flex items-center justify-center w-full gap-2"
                             >
                                 <ArrowLeft className="w-4 h-4" />
                                 Back to Sign In
-                            </button>
+                            </Link>
                         </div>
                     </form>
                 </CardContent>

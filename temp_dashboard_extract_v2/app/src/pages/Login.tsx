@@ -3,10 +3,7 @@ import { motion } from 'framer-motion';
 import { useAuth } from '@/context/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Lock, Mail, Terminal, ArrowRight, Sparkles, Shield, Zap, Globe } from 'lucide-react';
-
-interface LoginProps {
-    onSwitchToRegister?: () => void;
-}
+import { Link } from 'react-router-dom';
 
 const floatingFeatures = [
     { icon: Shield, label: 'Enterprise Security', x: '10%', y: '20%', delay: 0 },
@@ -15,7 +12,7 @@ const floatingFeatures = [
     { icon: Terminal, label: 'CLI Access', x: '70%', y: '65%', delay: 0.9 },
 ];
 
-export function Login({ onSwitchToRegister }: LoginProps) {
+export function Login() {
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [error, setError] = useState('');
@@ -255,13 +252,12 @@ export function Login({ onSwitchToRegister }: LoginProps) {
 
                         <div className="text-center text-sm text-slate-500 pt-2">
                             Don't have an account?{' '}
-                            <button
-                                type="button"
-                                onClick={onSwitchToRegister}
+                            <Link
+                                to="/register"
                                 className="text-blue-400 hover:text-blue-300 font-medium transition-colors"
                             >
                                 Create an account
-                            </button>
+                            </Link>
                         </div>
                     </form>
 

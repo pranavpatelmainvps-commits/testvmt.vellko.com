@@ -1,4 +1,3 @@
-
 import {
   LayoutDashboard,
   Rocket,
@@ -13,22 +12,21 @@ import {
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/context/AuthContext';
 import { motion } from 'framer-motion';
-
-interface SidebarProps {
-  currentView: string;
-  onViewChange: (view: 'dashboard' | 'deploy' | 'servers' | 'dns' | 'logs' | 'pmta-config' | 'admin' | 'profile') => void;
-}
+import { Link, useLocation } from 'react-router-dom';
 
 const navItems = [
-  { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { id: 'deploy', label: 'New Deployment', icon: Rocket },
-  { id: 'servers', label: 'Installed Servers', icon: Server },
-  { id: 'dns', label: 'DNS Manager', icon: Globe },
-  { id: 'pmta-config', label: 'VelkoMTA Config', icon: Settings },
+  { id: 'dashboard', path: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
+  { id: 'deploy', path: '/deploy', label: 'New Deployment', icon: Rocket },
+  { id: 'servers', path: '/servers', label: 'Installed Servers', icon: Server },
+  { id: 'dns', path: '/dns', label: 'DNS Manager', icon: Globe },
+  { id: 'pmta-config', path: '/pmta-config', label: 'VelkoMTA Config', icon: Settings },
 ];
 
-export function Sidebar({ currentView, onViewChange }: SidebarProps) {
+export function Sidebar() {
   const { user, logout } = useAuth();
+  const location = useLocation();
+  const currentView = location.pathname;
+
   return (
     <aside className="w-64 bg-[hsl(222,47%,5%)] border-r border-[hsl(217,33%,15%)] flex flex-col">
       {/* Brand */}
@@ -47,12 +45,13 @@ export function Sidebar({ currentView, onViewChange }: SidebarProps) {
         <ul className="space-y-1">
           {navItems.map((item) => {
             const Icon = item.icon;
-            const isActive = currentView === item.id;
+            // Treat active state if the path matches exactly
+            const isActive = currentView === item.path || (currentView === '/' && item.id === 'dashboard');
 
             return (
               <li key={item.id}>
-                <button
-                  onClick={() => onViewChange(item.id as any)}
+                <Link
+                  to={item.path}
                   className={cn(
                     "relative w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-colors duration-200 z-10",
                     isActive
@@ -72,7 +71,7 @@ export function Sidebar({ currentView, onViewChange }: SidebarProps) {
                     <Icon className="w-5 h-5" />
                   </motion.div>
                   {item.label}
-                </button>
+                </Link>
               </li>
             );
           })}
@@ -80,16 +79,16 @@ export function Sidebar({ currentView, onViewChange }: SidebarProps) {
           {/* Admin Panel - Only visible to admins */}
           {user?.role === 'admin' && (
             <li>
-              <button
-                onClick={() => onViewChange('admin')}
+              <Link
+                to="/admin"
                 className={cn(
                   "relative w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-colors duration-200 z-10",
-                  currentView === 'admin'
+                  currentView === '/admin'
                     ? "text-white"
                     : "text-slate-400 hover:text-white"
                 )}
               >
-                {currentView === 'admin' && (
+                {currentView === '/admin' && (
                   <motion.div
                     layoutId="activeTab"
                     className="absolute inset-0 bg-blue-600 rounded-lg shadow-lg shadow-blue-900/20 -z-10"
@@ -101,7 +100,7 @@ export function Sidebar({ currentView, onViewChange }: SidebarProps) {
                   <Shield className="w-5 h-5" />
                 </motion.div>
                 Admin Panel
-              </button>
+              </Link>
             </li>
           )}
         </ul>
@@ -110,13 +109,13 @@ export function Sidebar({ currentView, onViewChange }: SidebarProps) {
       {/* User Profile */}
       <div className="p-4 border-t border-[hsl(217,33%,15%)]">
         <div className="flex items-center gap-3 px-2">
-          <button onClick={() => onViewChange('profile')} className="w-9 h-9 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center hover:scale-105 transition-transform" title="Profile Settings">
+          <Link to="/profile" className="w-9 h-9 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center hover:scale-105 transition-transform" title="Profile Settings">
             <User className="w-4 h-4 text-white" />
-          </button>
-          <button onClick={() => onViewChange('profile')} className="flex-1 min-w-0 text-left hover:opacity-80 transition-opacity" title="Profile Settings">
+          </Link>
+          <Link to="/profile" className="flex-1 min-w-0 text-left hover:opacity-80 transition-opacity" title="Profile Settings">
             <p className="text-sm font-medium text-white truncate">{user?.name || 'User'}</p>
             <p className="text-xs text-muted-foreground truncate">{user?.email || 'user@example.com'}</p>
-          </button>
+          </Link>
           <button onClick={logout} className="p-2 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-red-400 transition-colors" title="Sign Out">
             <LogOut className="w-4 h-4" />
           </button>
